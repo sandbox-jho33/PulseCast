@@ -23,6 +23,7 @@ from ..models.state import (
     JobStatus,
     PodcastState,
 )
+from .checkpointer import get_checkpointer, make_thread_config
 
 
 class GraphState(TypedDict):
@@ -353,15 +354,24 @@ class PodcastGraphRunner:
     """Runner for the podcast generation graph."""
 
     def __init__(self) -> None:
-        self._graph = create_podcast_graph().compile()
+        self._graph = create_podcast_graph().compile(checkpointer=get_checkpointer())
 
     async def run(self, state: PodcastState) -> PodcastState:
         """Run the podcast generation graph."""
         graph_state = _state_to_graph(state)
+        config = make_thread_config(state.id)
 
-        final_state = await self._graph.ainvoke(graph_state)
+        final_state = await self._graph.ainvoke(graph_state, config)
 
         return _graph_to_state(final_state, state)
+
+    async def get_current_state(self, job_id: str) -> dict | None:
+        """Get the current graph state for a job from the checkpointer."""
+        config = make_thread_config(job_id)
+        snapshot = await self._graph.aget_state(config)
+        if snapshot and snapshot.values:
+            return snapshot.values
+        return None
 
 
 _graph_runner: PodcastGraphRunner | None = None

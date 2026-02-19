@@ -127,11 +127,26 @@ async def get_podcast_status(
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
+    current_step = state.current_step
+    progress_pct = state.progress_pct
+
+    if state.status == JobStatus.RUNNING:
+        graph = get_graph_runner()
+        checkpoint_state = await graph.get_current_state(job_id)
+        if checkpoint_state:
+            if checkpoint_state.get("current_step"):
+                try:
+                    current_step = CurrentStep(checkpoint_state["current_step"])
+                except ValueError:
+                    pass
+            if isinstance(checkpoint_state.get("progress_pct"), int):
+                progress_pct = checkpoint_state["progress_pct"]
+
     return StatusResponse(
         job_id=state.id,
         status=state.status,
-        current_step=state.current_step,
-        progress_pct=state.progress_pct,
+        current_step=current_step,
+        progress_pct=progress_pct,
         script_version=state.script_version,
         source_title=state.source_title,
         final_podcast_url=state.final_podcast_url,
