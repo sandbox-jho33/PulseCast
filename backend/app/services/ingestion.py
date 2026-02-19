@@ -7,10 +7,14 @@ Fetches content from URLs and extracts clean markdown.
 from __future__ import annotations
 
 import re
+import ssl
 from dataclasses import dataclass
 
 import httpx
 from bs4 import BeautifulSoup
+
+# Use system certificates for SSL
+_ssl_context = ssl.create_default_context(cafile="/usr/lib/ssl/cert.pem")
 
 
 @dataclass
@@ -32,7 +36,11 @@ async def ingest_source(source_url: str) -> IngestionResult:
     Raises:
         httpx.HTTPError: If the URL cannot be fetched.
     """
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=30.0,
+        verify=_ssl_context,
+    ) as client:
         response = await client.get(source_url)
         response.raise_for_status()
         html = response.text
@@ -66,14 +74,20 @@ def _extract_title(soup: BeautifulSoup) -> str:
 
 def _extract_main_content(soup: BeautifulSoup) -> str:
     """Extract main content from the page."""
-    article = soup.find("article") or soup.find("main") or soup.find("div", class_=re.compile(r"content|article|post", re.I))
+    article = (
+        soup.find("article")
+        or soup.find("main")
+        or soup.find("div", class_=re.compile(r"content|article|post", re.I))
+    )
 
     if article:
         return str(article)
 
     body = soup.find("body")
     if body:
-        for tag in body.find_all(["nav", "footer", "header", "aside", "script", "style", "form"]):
+        for tag in body.find_all(
+            ["nav", "footer", "header", "aside", "script", "style", "form"]
+        ):
             tag.decompose()
         return str(body)
 

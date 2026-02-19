@@ -46,13 +46,15 @@ def _get_ollama_llm() -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
     model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    request_timeout = float(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
 
     return ChatOllama(
         model=model,
         base_url=base_url,
         temperature=temperature,
+        request_timeout=request_timeout,
     )
 
 

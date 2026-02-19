@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.109.0",
     "httpx>=0.26.0",
     "langchain-core>=0.3.0",
+    "langchain-ollama>=1.0.1",
     "langchain-openai>=0.2.0",
     "langgraph>=0.2.0",
     "lxml>=5.0.0",
