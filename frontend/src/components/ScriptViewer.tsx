@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { motion } from 'motion/react';
 
 interface ScriptViewerProps {
-  script: string;
+  script: string | null | undefined;
   sourceTitle?: string;
   onEdit?: () => void;
   canEdit?: boolean;
@@ -14,6 +14,7 @@ interface ParsedLine {
 }
 
 function parseScript(script: string): ParsedLine[] {
+  if (!script) return [];
   const lines: ParsedLine[] = [];
   const rawLines = script.split('\n');
   
@@ -43,6 +44,20 @@ function parseScript(script: string): ParsedLine[] {
 
 export function ScriptViewer({ script, sourceTitle, onEdit, canEdit }: ScriptViewerProps) {
   const lines = useMemo(() => parseScript(script), [script]);
+
+  if (!script || lines.length === 0) {
+    return (
+      <motion.div
+        className="h-full flex flex-col items-center justify-center"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.5 }}
+      >
+        <span className="text-xs font-medium tracking-widest text-muted uppercase">Script</span>
+        <p className="text-sm text-muted mt-2">No script available yet.</p>
+      </motion.div>
+    );
+  }
   
   const speakerStyles = {
     LEO: {

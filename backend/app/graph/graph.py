@@ -10,13 +10,12 @@ This module implements the podcast generation graph with nodes for:
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from ..llm import get_llm
 from ..models.state import (
     CurrentStep,
     DirectorDecision,
@@ -44,12 +43,9 @@ class GraphState(TypedDict):
     error_message: str
 
 
-def _get_llm() -> ChatOpenAI:
-    """Get the LLM client."""
-    return ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=0.7,
-    )
+def _get_llm():
+    """Get the LLM client from the factory."""
+    return get_llm()
 
 
 def _state_to_graph(state: PodcastState) -> GraphState:
@@ -67,7 +63,9 @@ def _state_to_graph(state: PodcastState) -> GraphState:
         progress_pct=state.progress_pct,
         critique_count=state.critique_count,
         critique_limit=state.critique_limit,
-        director_decision=state.director_decision.value if state.director_decision else "",
+        director_decision=state.director_decision.value
+        if state.director_decision
+        else "",
         error_message=state.error_message or "",
     )
 
@@ -89,7 +87,9 @@ def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> Podcas
         progress_pct=graph_state["progress_pct"],
         critique_count=graph_state["critique_count"],
         critique_limit=graph_state["critique_limit"],
-        director_decision=DirectorDecision(graph_state["director_decision"]) if graph_state["director_decision"] else None,
+        director_decision=DirectorDecision(graph_state["director_decision"])
+        if graph_state["director_decision"]
+        else None,
         error_message=graph_state["error_message"] or None,
     )
 
@@ -190,19 +190,24 @@ async def leo_node(state: GraphState) -> Dict[str, Any]:
 mention the topic briefly, and kick off the discussion. Remember to start your lines with "LEO:"""
 
         messages = [
-            SystemMessage(content=LEO_SYSTEM.format(
-                script="(starting fresh)",
-                knowledge_points=state["knowledge_points"]
-            )),
+            SystemMessage(
+                content=LEO_SYSTEM.format(
+                    script="(starting fresh)",
+                    knowledge_points=state["knowledge_points"],
+                )
+            ),
             HumanMessage(content=intro_prompt),
         ]
     else:
         messages = [
-            SystemMessage(content=LEO_SYSTEM.format(
-                script=existing_script,
-                knowledge_points=state["knowledge_points"]
-            )),
-            HumanMessage(content="Continue the podcast discussion. Add 1-2 LEO: lines that advance the conversation."),
+            SystemMessage(
+                content=LEO_SYSTEM.format(
+                    script=existing_script, knowledge_points=state["knowledge_points"]
+                )
+            ),
+            HumanMessage(
+                content="Continue the podcast discussion. Add 1-2 LEO: lines that advance the conversation."
+            ),
         ]
 
     response = await llm.ainvoke(messages)
@@ -230,7 +235,9 @@ async def sarah_node(state: GraphState) -> Dict[str, Any]:
 
     messages = [
         SystemMessage(content=SARAH_SYSTEM.format(script=state["script"])),
-        HumanMessage(content="Add 1-2 SARAH: lines that respond to Leo and add depth to the discussion."),
+        HumanMessage(
+            content="Add 1-2 SARAH: lines that respond to Leo and add depth to the discussion."
+        ),
     ]
 
     response = await llm.ainvoke(messages)
@@ -258,7 +265,9 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
 
     messages = [
         SystemMessage(content=DIRECTOR_SYSTEM.format(script=pause_script)),
-        HumanMessage(content="Review this script and decide: APPROVE or REWRITE with reason."),
+        HumanMessage(
+            content="Review this script and decide: APPROVE or REWRITE with reason."
+        ),
     ]
 
     response = await llm.ainvoke(messages)
@@ -274,7 +283,11 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
         }
     else:
         new_critique_count = state["critique_count"] + 1
-        error_msg = decision_text.replace("REWRITE:", "").strip() if "REWRITE:" in decision_text else "Needs revision"
+        error_msg = (
+            decision_text.replace("REWRITE:", "").strip()
+            if "REWRITE:" in decision_text
+            else "Needs revision"
+        )
 
         if new_critique_count >= state["critique_limit"]:
             return {
@@ -305,10 +318,15 @@ def _add_pauses(script: str) -> str:
         result.append(line)
         if i < len(lines) - 1:
             next_line = lines[i + 1].strip()
-            if next_line and (next_line.startswith("LEO:") or next_line.startswith("SARAH:")):
+            if next_line and (
+                next_line.startswith("LEO:") or next_line.startswith("SARAH:")
+            ):
                 current_speaker = line.strip()[:3] if line.strip() else ""
                 next_speaker = next_line[:3]
-                if current_speaker != next_speaker and current_speaker in ("LEO", "SAR"):
+                if current_speaker != next_speaker and current_speaker in (
+                    "LEO",
+                    "SAR",
+                ):
                     result.append("")
                     result.append("[pause: 500ms]")
                     result.append("")
