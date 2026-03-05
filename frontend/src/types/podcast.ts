@@ -8,7 +8,7 @@ export type CurrentStep =
   | 'AUDIO' 
   | 'COMPLETED';
 
-export type DirectorDecision = 'APPROVE' | 'REWRITE';
+export type DirectorDecision = 'APPROVE' | 'REWRITE' | 'CONTINUE';
 
 export interface AudioSegment {
   speaker: string;

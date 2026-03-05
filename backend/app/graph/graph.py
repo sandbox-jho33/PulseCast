@@ -5,11 +5,12 @@ This module implements the podcast generation graph with nodes for:
 - Researcher: Extracts knowledge points from source content
 - Leo: Drafts engaging script sections as the visionary host
 - Sarah: Responds with realistic grounding and caveats
-- Director: Reviews, cleans, and decides APPROVE vs REWRITE
+- Director: Reviews, cleans, and decides APPROVE vs CONTINUE
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -33,11 +34,15 @@ class GraphState(TypedDict):
     source_title: str
     source_markdown: str
     knowledge_points: str
+    knowledge_points_list: list[str]
+    covered_points: list[str]
     script: str
     script_version: int
     status: str
     current_step: str
     progress_pct: int
+    turn_count: int
+    min_words: int
     critique_count: int
     critique_limit: int
     director_decision: str
@@ -57,11 +62,15 @@ def _state_to_graph(state: PodcastState) -> GraphState:
         source_title=state.source_title or "",
         source_markdown=state.source_markdown or "",
         knowledge_points=state.knowledge_points or "",
+        knowledge_points_list=[],
+        covered_points=[],
         script=state.script or "",
         script_version=state.script_version,
         status=state.status.value,
         current_step=state.current_step.value,
         progress_pct=state.progress_pct,
+        turn_count=0,
+        min_words=1500,
         critique_count=state.critique_count,
         critique_limit=state.critique_limit,
         director_decision=state.director_decision.value
@@ -97,60 +106,364 @@ def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> Podcas
 
 RESEARCHER_SYSTEM = """You are a research assistant. Extract the key knowledge points from the provided content.
 
-Create a concise beat-sheet with:
-- 5-8 key points that capture the main ideas
-- Each point should be a single sentence
-- Focus on facts, insights, and notable details
-- Be neutral and objective
+Create a detailed beat-sheet with:
+- 6-8 key points that capture the main ideas and insights
+- Each point should be 1-2 sentences with enough detail to discuss
+- Focus on facts, insights, notable examples, and actionable takeaways
+- Include specific names, numbers, or details where relevant
+- Stay strictly grounded in the source content - do not add external knowledge
 
-Output format: Just list the points, one per line, no bullets or numbering."""
+Output format: List each point on a separate line prefixed with "- " (dash and space).
+Example:
+- First knowledge point with specific details and names
+- Second knowledge point with specific details and names
 
-
-LEO_SYSTEM = """You are Leo, the enthusiastic and visionary podcast co-host. You see exciting possibilities and love to explore big ideas.
-
-Guidelines:
-- Start your lines with "LEO:"
-- Be engaging, optimistic, and curious
-- Use conversational language
-- Reference knowledge points naturally
-- Ask questions that spark discussion
-- Keep each line to 1-3 sentences
-
-Previous script (if any): {script}
-
-Knowledge points to discuss:
-{knowledge_points}"""
+Important: Each point should contain enough substance for a meaningful discussion."""
 
 
-SARAH_SYSTEM = """You are Sarah, the grounded and realistic podcast co-host. You provide balance, caveats, and practical perspectives.
+LEO_SYSTEM = """You are Leo, an enthusiastic podcast co-host who loves exploring ideas. You have genuine curiosity and bring energy to conversations.
 
-Guidelines:
-- Start your lines with "SARAH:"
-- Respond to Leo's points with nuance
-- Add context, limitations, or alternative views
-- Be conversational but thoughtful
-- Keep each line to 1-3 sentences
+YOUR VOICE:
+- Speak naturally, like you're having a real conversation with a friend
+- Use varied sentence structures - mix short punchy statements with longer flowing thoughts
+- Let your enthusiasm show, but don't be over-the-top
+- When excited, your sentences might run together a bit - that's natural
+- React genuinely to what Sarah says - build on it, challenge it, or take it somewhere new
 
-Current script so far:
-{script}"""
+CRITICAL RULES:
+1. STAY ON TOPIC - Only discuss the provided knowledge points. Do NOT introduce random topics like neural oscillations, cortisol, or unrelated concepts.
+2. NO STAGE DIRECTIONS - Never write things like (smiling), (nodding), (laughing), [pause], etc.
+3. NO REPETITION - Never repeat phrases like "That's a great point" or "Absolutely" or "Exactly" multiple times.
+4. ONE SIGN-OFF ONLY - Only say goodbye ONCE at the very end of the entire podcast, not after each segment.
+5. NO FALSE ENDINGS - Don't write "In conclusion" or "To wrap up" until the actual final segment.
+
+KNOWLEDGE POINTS TO DISCUSS (these are your ONLY source of content):
+{knowledge_points}
+
+POINTS ALREADY COVERED (don't repeat these):
+{covered_points}
+
+CURRENT SCRIPT SO FAR:
+{script}
+
+Write 100-150 words. Start with "LEO:" - remember you're having a natural conversation."""
 
 
-DIRECTOR_SYSTEM = """You are the podcast director. Review the script and decide if it's ready or needs revision.
+SARAH_SYSTEM = """You are Sarah, a thoughtful podcast co-host who brings depth and nuance to conversations. You're not cynical, but you like to dig deeper.
 
-Review criteria:
-1. Has a clear intro that hooks the listener
-2. Covers key knowledge points naturally
-3. Both hosts contribute meaningfully
-4. Has a conclusion that wraps up
-5. No excessive repetition
-6. Appropriate length (not too short, not too long)
+YOUR VOICE:
+- Speak naturally and conversationally
+- Build on what Leo says - expand, question, or provide a different angle
+- Use specific examples and concrete details
+- Vary your sentence structure - don't fall into patterns
+- React authentically - if Leo says something interesting, engage with it genuinely
 
-Output ONLY one of:
-- "APPROVE" if the script is ready
-- "REWRITE: [brief reason]" if it needs revision
+CRITICAL RULES:
+1. STAY ON TOPIC - Only discuss the provided knowledge points. Do NOT introduce random topics like neural oscillations, cortisol, or unrelated concepts.
+2. NO STAGE DIRECTIONS - Never write things like (smiling), (nodding), (laughing), [pause], etc.
+3. NO REPETITION - Never repeat phrases like "That's a great point" or "Absolutely" or "Exactly" multiple times.
+4. ONE SIGN-OFF ONLY - Only say goodbye ONCE at the very end of the entire podcast, not after each segment.
+5. NO FALSE ENDINGS - Don't write "In conclusion" or "To wrap up" until the actual final segment.
+
+KNOWLEDGE POINTS TO DISCUSS (these are your ONLY source of content):
+{knowledge_points}
+
+POINTS ALREADY COVERED (don't repeat these):
+{covered_points}
+
+CURRENT SCRIPT SO FAR:
+{script}
+
+Write 100-150 words. Start with "SARAH:" - remember you're having a natural conversation."""
+
+
+DIRECTOR_SYSTEM = """You are a podcast director reviewing the script for quality issues.
+
+CRITICAL QUALITY CHECKS:
+1. TOPIC DRIFT: Are the hosts discussing ONLY the provided knowledge points? Reject if they've drifted to unrelated topics (neuroscience terms, random concepts not in the source).
+2. REPETITION: Are there repeated phrases like "That's a great point", "Absolutely", "Exactly" appearing multiple times? Reject.
+3. FALSE ENDINGS: Are there multiple "In conclusion" or "To wrap up" sections? There should only be ONE ending.
+4. STAGE DIRECTIONS: Are there parentheticals like (smiling), (nodding)? These should not exist.
+5. COVERAGE: Have most knowledge points been discussed with substance?
+6. LENGTH: Is the script substantive (1500+ words)?
+
+KNOWLEDGE POINTS (hosts should ONLY discuss these):
+{knowledge_points}
+
+POINTS ALREADY DISCUSSED:
+{covered_points}
+
+WORD COUNT: {word_count} (target: {min_words})
+
+If there are QUALITY ISSUES (drift, repetition, false endings, stage directions), output:
+"ISSUES: [list the specific problems found]"
+
+If the script is good but needs more content on uncovered points, output:
+"CONTINUE: [which knowledge points need discussion]"
+
+If the script is complete and high-quality, output:
+"APPROVE"
 
 Script to review:
 {script}"""
+
+
+def _parse_knowledge_points(knowledge_points_text: str) -> list[str]:
+    """Parse knowledge points text into a list of individual points."""
+    points = []
+    for line in knowledge_points_text.strip().split("\n"):
+        line = line.strip()
+        if line.startswith("- "):
+            points.append(line[2:])
+        elif line.startswith("• "):
+            points.append(line[2:])
+        elif line and not line.startswith("#"):
+            points.append(line)
+    return points
+
+
+def _extract_key_phrases(text: str) -> list[str]:
+    """Extract meaningful key phrases from text for matching."""
+    text_lower = text.lower()
+
+    stop_words = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "they",
+        "them",
+        "their",
+        "we",
+        "us",
+        "our",
+        "you",
+        "your",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "i",
+        "me",
+        "my",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "not",
+        "only",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "also",
+        "now",
+        "here",
+        "there",
+        "then",
+        "once",
+        "about",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "again",
+        "further",
+        "any",
+        "if",
+        "as",
+    }
+
+    words = re.findall(r"\b[a-z]{3,}\b", text_lower)
+    key_words = [w for w in words if w not in stop_words]
+
+    phrases = re.findall(r"\b[a-z]+(?:\s+[a-z]+)*\b", text_lower)
+    meaningful_phrases = []
+    for phrase in phrases:
+        words_in_phrase = phrase.split()
+        if len(words_in_phrase) >= 2:
+            meaningful_count = sum(1 for w in words_in_phrase if w not in stop_words)
+            if meaningful_count >= 2:
+                meaningful_phrases.append(phrase)
+
+    return key_words + meaningful_phrases
+
+
+def _detect_covered_points(script: str, knowledge_points_list: list[str]) -> list[str]:
+    """Detect which knowledge points have been meaningfully discussed in the script."""
+    covered = []
+    script_lower = script.lower()
+
+    script_key_phrases = set(_extract_key_phrases(script))
+
+    for point in knowledge_points_list:
+        point_lower = point.lower()
+        point_phrases = _extract_key_phrases(point)
+
+        if not point_phrases:
+            continue
+
+        phrase_matches = sum(1 for phrase in point_phrases if phrase in script_lower)
+
+        exact_phrase_matches = 0
+        for phrase in point_phrases:
+            if " " in phrase and phrase in script_lower:
+                exact_phrase_matches += 1
+
+        coverage_score = (phrase_matches / len(point_phrases)) + (
+            exact_phrase_matches * 0.5
+        )
+
+        if coverage_score >= 0.6:
+            covered.append(point)
+
+    return covered
+
+
+def _detect_repetition(script: str) -> list[str]:
+    """Detect repeated phrases that indicate robotic dialogue."""
+    issues = []
+
+    repetitive_patterns = [
+        r"\b(that\'s a great point|absolutely|exactly|great point|good point)\b",
+        r"\b(well,? i think|i think that|i\'d like to add)\b",
+        r"\b(as we wrap up|in conclusion|to conclude|to wrap up)\b",
+        r"\b(thank you for|it\'s been (a|an) (absolute|great) pleasure)\b",
+        r"\b(let\'s (dive|explore|continue|talk))\b",
+    ]
+
+    script_lower = script.lower()
+
+    for pattern in repetitive_patterns:
+        matches = re.findall(pattern, script_lower)
+        if len(matches) >= 3:
+            issues.append(
+                f"Repetitive phrase '{matches[0]}' appears {len(matches)} times"
+            )
+
+    return issues
+
+
+def _detect_quality_issues(script: str) -> list[str]:
+    """Detect various quality issues in the script."""
+    issues = []
+
+    stage_directions = re.findall(r"\([^)]+\)", script)
+    if stage_directions:
+        issues.append(
+            f"Found {len(stage_directions)} stage directions like '(smiling)', '(nodding)' - these should be removed"
+        )
+
+    false_endings = len(
+        re.findall(
+            r"\b(in conclusion|to wrap up|as we conclude|concluding|to conclude)\b",
+            script.lower(),
+        )
+    )
+    if false_endings >= 2:
+        issues.append(
+            f"Found {false_endings} false ending phrases - should only have ONE conclusion"
+        )
+
+    goodbye_count = len(
+        re.findall(
+            r"\b(thank you for (joining|listening|being)|thanks for (joining|listening|being))\b",
+            script.lower(),
+        )
+    )
+    if goodbye_count >= 2:
+        issues.append(
+            f"Found {goodbye_count} goodbye/sign-off sections - should only have ONE at the very end"
+        )
+
+    drift_keywords = [
+        "neural oscillation",
+        "cortisol",
+        "mirror neuron",
+        "dopamine",
+        "brainwave entrainment",
+        "embodied cognition",
+        "mental time travel",
+        "neural synchrony",
+    ]
+    for keyword in drift_keywords:
+        if keyword in script.lower():
+            issues.append(
+                f"Possible topic drift: '{keyword}' detected - ensure this relates to the source content"
+            )
+
+    return issues
+
+
+def _count_words(script: str) -> int:
+    """Count words in the script (excluding speaker prefixes and stage directions)."""
+    clean_script = re.sub(r"\([^)]+\)", "", script)
+    clean_script = re.sub(r"\[.*?\]", "", clean_script)
+    clean_script = re.sub(r"(LEO:|SARAH:)", "", clean_script)
+    words = clean_script.split()
+    return len(words)
 
 
 async def researcher_node(state: GraphState) -> Dict[str, Any]:
@@ -167,146 +480,279 @@ async def researcher_node(state: GraphState) -> Dict[str, Any]:
     ]
 
     response = await llm.ainvoke(messages)
-    knowledge_points = response.content.strip()
+    knowledge_points_text = str(response.content).strip()
+    knowledge_points_list = _parse_knowledge_points(knowledge_points_text)
 
     return {
-        "knowledge_points": knowledge_points,
+        "knowledge_points": knowledge_points_text,
+        "knowledge_points_list": knowledge_points_list,
+        "covered_points": [],
         "current_step": CurrentStep.RESEARCHING.value,
-        "progress_pct": 25,
+        "progress_pct": 15,
+        "turn_count": 0,
     }
 
 
 async def leo_node(state: GraphState) -> Dict[str, Any]:
     """
     Draft engaging script content as Leo (visionary host).
-
-    Uses knowledge points to create conversational LEO: lines.
     """
     llm = _get_llm()
 
     existing_script = state.get("script", "")
+    knowledge_points_list = state.get("knowledge_points_list", [])
+    covered_points = state.get("covered_points", [])
+    turn_count = state.get("turn_count", 0)
+
+    uncovered_points = [p for p in knowledge_points_list if p not in covered_points]
+    covered_points_str = (
+        "\n".join(f"- {p}" for p in covered_points) if covered_points else "None yet"
+    )
+    uncovered_points_str = (
+        "\n".join(f"- {p}" for p in uncovered_points)
+        if uncovered_points
+        else "All major points covered - provide a brief conclusion"
+    )
 
     if not existing_script:
-        intro_prompt = """Start the podcast with an engaging intro. Introduce yourselves as Leo and Sarah, 
-mention the topic briefly, and kick off the discussion. Remember to start your lines with "LEO:"""
-
-        messages = [
-            SystemMessage(
-                content=LEO_SYSTEM.format(
-                    script="(starting fresh)",
-                    knowledge_points=state["knowledge_points"],
-                )
-            ),
-            HumanMessage(content=intro_prompt),
-        ]
+        intro_prompt = """Start the podcast with a natural, engaging intro (150-200 words). 
+Introduce yourselves briefly as Leo and Sarah, hook the listener with why this topic matters, 
+then dive into discussing ONE specific knowledge point in detail.
+Start your lines with "LEO:" and write like you're actually talking to someone."""
     else:
-        messages = [
-            SystemMessage(
-                content=LEO_SYSTEM.format(
-                    script=existing_script, knowledge_points=state["knowledge_points"]
-                )
-            ),
-            HumanMessage(
-                content="Continue the podcast discussion. Add 1-2 LEO: lines that advance the conversation."
-            ),
-        ]
+        quality_issues = _detect_quality_issues(existing_script)
+        repetition_issues = _detect_repetition(existing_script)
+        all_issues = quality_issues + repetition_issues
+
+        issues_warning = ""
+        if all_issues:
+            issues_warning = f"""
+
+IMPORTANT - Fix these issues in your response:
+{chr(10).join(f"- {issue}" for issue in all_issues[:3])}"""
+
+        if uncovered_points:
+            intro_prompt = f"""Continue the conversation naturally (150-200 words).
+Pick ONE uncovered knowledge point and discuss it in depth. Quote specific details from it.
+Do NOT introduce new topics outside the knowledge points.{issues_warning}
+
+UNCOVERED POINTS TO DISCUSS:
+{uncovered_points_str}"""
+        else:
+            intro_prompt = f"""Provide a natural, brief conclusion (100-150 words).
+Summarize the key insights discussed. Say goodbye naturally ONCE - don't repeat sign-offs.
+This is the FINAL segment of the podcast.{issues_warning}"""
+
+    messages = [
+        SystemMessage(
+            content=LEO_SYSTEM.format(
+                script=existing_script if existing_script else "(starting fresh)",
+                knowledge_points=uncovered_points_str,
+                covered_points=covered_points_str,
+            )
+        ),
+        HumanMessage(content=intro_prompt),
+    ]
 
     response = await llm.ainvoke(messages)
-    new_lines = response.content.strip()
+    new_lines = str(response.content).strip()
 
     if existing_script:
         script = existing_script + "\n\n" + new_lines
     else:
         script = new_lines
 
+    updated_covered = _detect_covered_points(script, knowledge_points_list)
+
     return {
         "script": script,
+        "covered_points": updated_covered,
+        "turn_count": turn_count + 1,
         "current_step": CurrentStep.SCRIPTING.value,
-        "progress_pct": 45,
+        "progress_pct": min(80, 25 + turn_count * 8),
     }
 
 
 async def sarah_node(state: GraphState) -> Dict[str, Any]:
     """
     Add Sarah's responses to the script.
-
-    Provides grounded, realistic counterpoints to Leo's enthusiasm.
     """
     llm = _get_llm()
 
+    existing_script = state.get("script", "")
+    knowledge_points_list = state.get("knowledge_points_list", [])
+    covered_points = state.get("covered_points", [])
+    turn_count = state.get("turn_count", 0)
+
+    uncovered_points = [p for p in knowledge_points_list if p not in covered_points]
+    covered_points_str = (
+        "\n".join(f"- {p}" for p in covered_points) if covered_points else "None yet"
+    )
+    uncovered_points_str = (
+        "\n".join(f"- {p}" for p in uncovered_points)
+        if uncovered_points
+        else "All major points covered - help conclude naturally"
+    )
+
+    quality_issues = _detect_quality_issues(existing_script)
+    repetition_issues = _detect_repetition(existing_script)
+    all_issues = quality_issues + repetition_issues
+
+    issues_warning = ""
+    if all_issues:
+        issues_warning = f"""
+
+IMPORTANT - Avoid these issues seen in the script:
+{chr(10).join(f"- {issue}" for issue in all_issues[:3])}"""
+
+    if uncovered_points:
+        continue_prompt = f"""Respond naturally (150-200 words) to what Leo said.
+Pick ONE uncovered knowledge point and add depth or a different perspective. Quote specific details.
+Do NOT introduce topics outside the knowledge points.{issues_warning}
+
+UNCOVERED POINTS TO DISCUSS:
+{uncovered_points_str}"""
+    else:
+        continue_prompt = f"""Help provide a natural, brief conclusion (100-150 words).
+Build on Leo's conclusion naturally. Don't repeat sign-offs.
+This is the FINAL segment.{issues_warning}"""
+
     messages = [
-        SystemMessage(content=SARAH_SYSTEM.format(script=state["script"])),
-        HumanMessage(
-            content="Add 1-2 SARAH: lines that respond to Leo and add depth to the discussion."
+        SystemMessage(
+            content=SARAH_SYSTEM.format(
+                script=existing_script,
+                knowledge_points=uncovered_points_str,
+                covered_points=covered_points_str,
+            )
         ),
+        HumanMessage(content=continue_prompt),
     ]
 
     response = await llm.ainvoke(messages)
-    new_lines = response.content.strip()
+    new_lines = str(response.content).strip()
 
-    script = state["script"] + "\n\n" + new_lines
+    script = existing_script + "\n\n" + new_lines
+
+    updated_covered = _detect_covered_points(script, knowledge_points_list)
 
     return {
         "script": script,
-        "progress_pct": 60,
+        "covered_points": updated_covered,
+        "turn_count": turn_count + 1,
+        "progress_pct": min(85, 30 + turn_count * 8),
     }
 
 
 async def director_node(state: GraphState) -> Dict[str, Any]:
     """
-    Review the script and decide APPROVE or REWRITE.
-
-    Adds pauses, checks for issues, and increments critique_count if needed.
+    Review the script and decide APPROVE or CONTINUE.
     """
     llm = _get_llm()
 
     script = state["script"]
+    knowledge_points_list = state.get("knowledge_points_list", [])
+    min_words = state.get("min_words", 1500)
+    turn_count = state.get("turn_count", 0)
+
+    word_count = _count_words(script)
+    updated_covered = _detect_covered_points(script, knowledge_points_list)
+    uncovered_points = [p for p in knowledge_points_list if p not in updated_covered]
+
+    quality_issues = _detect_quality_issues(script)
+    repetition_issues = _detect_repetition(script)
+    all_quality_issues = quality_issues + repetition_issues
+
+    knowledge_points_str = (
+        "\n".join(f"- {p}" for p in knowledge_points_list)
+        if knowledge_points_list
+        else "None"
+    )
+    covered_points_str = (
+        "\n".join(f"- {p}" for p in updated_covered) if updated_covered else "None yet"
+    )
 
     pause_script = _add_pauses(script)
 
     messages = [
-        SystemMessage(content=DIRECTOR_SYSTEM.format(script=pause_script)),
+        SystemMessage(
+            content=DIRECTOR_SYSTEM.format(
+                script=pause_script,
+                knowledge_points=knowledge_points_str,
+                covered_points=covered_points_str,
+                word_count=word_count,
+                min_words=min_words,
+            )
+        ),
         HumanMessage(
-            content="Review this script and decide: APPROVE or REWRITE with reason."
+            content="Review this script for quality issues and coverage. Decide: APPROVE, ISSUES, or CONTINUE."
         ),
     ]
 
     response = await llm.ainvoke(messages)
-    decision_text = response.content.strip()
+    decision_text = str(response.content).strip()
+
+    coverage_ratio = (
+        len(updated_covered) / len(knowledge_points_list)
+        if knowledge_points_list
+        else 1.0
+    )
+
+    max_turns = 16
+    if turn_count >= max_turns:
+        return {
+            "script": pause_script,
+            "director_decision": DirectorDecision.APPROVE.value,
+            "script_version": state["script_version"] + 1,
+            "covered_points": updated_covered,
+            "current_step": CurrentStep.DIRECTOR.value,
+            "progress_pct": 85,
+            "error_message": f"Reached max turns ({max_turns}). Auto-approved with {coverage_ratio:.0%} coverage, {word_count} words.",
+        }
+
+    if "ISSUES:" in decision_text.upper() or len(all_quality_issues) >= 3:
+        guidance = (
+            decision_text.replace("ISSUES:", "").strip()
+            if "ISSUES:" in decision_text
+            else ""
+        )
+        if all_quality_issues:
+            guidance += "\n\nDetected issues: " + "; ".join(all_quality_issues[:3])
+        if uncovered_points:
+            guidance += f"\n\nStill need to cover: {', '.join(uncovered_points[:2])}"
+
+        return {
+            "script": pause_script,
+            "director_decision": DirectorDecision.CONTINUE.value,
+            "covered_points": updated_covered,
+            "current_step": CurrentStep.DIRECTOR.value,
+            "error_message": guidance,
+        }
 
     if decision_text.upper().startswith("APPROVE"):
         return {
             "script": pause_script,
             "director_decision": DirectorDecision.APPROVE.value,
             "script_version": state["script_version"] + 1,
+            "covered_points": updated_covered,
             "current_step": CurrentStep.DIRECTOR.value,
             "progress_pct": 85,
         }
     else:
-        new_critique_count = state["critique_count"] + 1
-        error_msg = (
-            decision_text.replace("REWRITE:", "").strip()
-            if "REWRITE:" in decision_text
-            else "Needs revision"
+        guidance = (
+            decision_text.replace("CONTINUE:", "").strip()
+            if "CONTINUE:" in decision_text
+            else "Continue the discussion"
         )
 
-        if new_critique_count >= state["critique_limit"]:
-            return {
-                "script": pause_script,
-                "director_decision": DirectorDecision.APPROVE.value,
-                "script_version": state["script_version"] + 1,
-                "critique_count": new_critique_count,
-                "current_step": CurrentStep.DIRECTOR.value,
-                "progress_pct": 85,
-                "error_message": f"Reached critique limit. Auto-approved. Last feedback: {error_msg}",
-            }
+        if uncovered_points:
+            guidance += f"\n\nUncovered points: {', '.join(uncovered_points[:3])}"
 
         return {
             "script": pause_script,
-            "director_decision": DirectorDecision.REWRITE.value,
-            "critique_count": new_critique_count,
+            "director_decision": DirectorDecision.CONTINUE.value,
+            "covered_points": updated_covered,
             "current_step": CurrentStep.DIRECTOR.value,
-            "error_message": error_msg,
+            "error_message": guidance,
         }
 
 
@@ -337,8 +783,14 @@ def _add_pauses(script: str) -> str:
 
 def _should_continue(state: GraphState) -> Literal["leo", "end"]:
     """Determine if we should loop back to leo or end."""
-    if state.get("director_decision") == DirectorDecision.APPROVE.value:
+    decision = state.get("director_decision")
+
+    if decision == DirectorDecision.APPROVE.value:
         return "end"
+
+    if decision == DirectorDecision.CONTINUE.value:
+        return "leo"
+
     return "leo"
 
 

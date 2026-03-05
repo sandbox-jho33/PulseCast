@@ -33,6 +33,7 @@ class CurrentStep(str, Enum):
 class DirectorDecision(str, Enum):
     APPROVE = "APPROVE"
     REWRITE = "REWRITE"
+    CONTINUE = "CONTINUE"
 
 
 class AudioSegment(BaseModel):
@@ -44,29 +45,59 @@ class AudioSegment(BaseModel):
 class PodcastState(BaseModel):
     id: str = Field(..., description="Unique identifier for this podcast job.")
     source_url: str = Field(..., description="Original content source URL.")
-    source_title: Optional[str] = Field(default=None, description="Title extracted from source.")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Job creation timestamp.")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp.")
+    source_title: Optional[str] = Field(
+        default=None, description="Title extracted from source."
+    )
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Job creation timestamp."
+    )
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Last update timestamp."
+    )
 
-    source_markdown: Optional[str] = Field(default=None, description="Extracted markdown from source.")
-    knowledge_points: Optional[str] = Field(default=None, description="Beat-sheet extracted by researcher.")
-    script: Optional[str] = Field(default=None, description="Current podcast script with LEO:/SARAH: lines.")
+    source_markdown: Optional[str] = Field(
+        default=None, description="Extracted markdown from source."
+    )
+    knowledge_points: Optional[str] = Field(
+        default=None, description="Beat-sheet extracted by researcher."
+    )
+    script: Optional[str] = Field(
+        default=None, description="Current podcast script with LEO:/SARAH: lines."
+    )
     script_version: int = Field(default=0, description="Script revision counter.")
 
-    status: JobStatus = Field(default=JobStatus.PENDING, description="Overall job status.")
-    current_step: CurrentStep = Field(default=CurrentStep.INGESTING, description="Current processing step.")
-    progress_pct: int = Field(default=0, ge=0, le=100, description="Progress percentage 0-100.")
+    status: JobStatus = Field(
+        default=JobStatus.PENDING, description="Overall job status."
+    )
+    current_step: CurrentStep = Field(
+        default=CurrentStep.INGESTING, description="Current processing step."
+    )
+    progress_pct: int = Field(
+        default=0, ge=0, le=100, description="Progress percentage 0-100."
+    )
 
     critique_count: int = Field(default=0, description="Number of REWRITE cycles.")
-    critique_limit: int = Field(default=3, description="Maximum allowed REWRITE cycles.")
+    critique_limit: int = Field(
+        default=3, description="Maximum allowed REWRITE cycles."
+    )
 
-    audio_segments: Optional[List[AudioSegment]] = Field(default=None, description="Generated audio segments.")
-    final_podcast_url: Optional[str] = Field(default=None, description="URL to final podcast audio file.")
-    duration_seconds: Optional[float] = Field(default=None, description="Final podcast duration.")
+    audio_segments: Optional[List[AudioSegment]] = Field(
+        default=None, description="Generated audio segments."
+    )
+    final_podcast_url: Optional[str] = Field(
+        default=None, description="URL to final podcast audio file."
+    )
+    duration_seconds: Optional[float] = Field(
+        default=None, description="Final podcast duration."
+    )
 
-    error_message: Optional[str] = Field(default=None, description="Error message if FAILED.")
+    error_message: Optional[str] = Field(
+        default=None, description="Error message if FAILED."
+    )
 
-    director_decision: Optional[DirectorDecision] = Field(default=None, description="Director's decision after review.")
+    director_decision: Optional[DirectorDecision] = Field(
+        default=None, description="Director's decision after review."
+    )
 
 
 class PodcastStateUpdate(BaseModel):
@@ -87,7 +118,9 @@ class PodcastStateUpdate(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    source_url: str = Field(..., description="URL of the content to convert to podcast.")
+    source_url: str = Field(
+        ..., description="URL of the content to convert to podcast."
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -112,10 +145,26 @@ class DownloadResponse(BaseModel):
     duration_seconds: Optional[float]
 
 
+class JobListItem(BaseModel):
+    job_id: str
+    source_url: str
+    source_title: Optional[str]
+    status: JobStatus
+    progress_pct: int
+    created_at: datetime
+
+
+class JobListResponse(BaseModel):
+    jobs: List[JobListItem]
+    total: int
+
+
 class EditRequest(BaseModel):
     job_id: str = Field(..., description="Job ID to edit.")
     script: str = Field(..., description="New script content.")
-    resume_from_director: bool = Field(default=False, description="Resume workflow from director.")
+    resume_from_director: bool = Field(
+        default=False, description="Resume workflow from director."
+    )
 
 
 class EditResponse(BaseModel):

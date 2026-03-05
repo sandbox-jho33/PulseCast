@@ -24,6 +24,8 @@ from ...models.state import (
     EditResponse,
     GenerateRequest,
     GenerateResponse,
+    JobListItem,
+    JobListResponse,
     JobStatus,
     PodcastState,
     StatusResponse,
@@ -110,6 +112,37 @@ async def generate_podcast(
         status=state.status,
         current_step=state.current_step,
     )
+
+
+@router.get("/jobs", response_model=JobListResponse)
+async def list_podcast_jobs(
+    limit: int = 50,
+    offset: int = 0,
+) -> JobListResponse:
+    """
+    List all podcast generation jobs.
+
+    Returns a paginated list of jobs ordered by creation date (newest first).
+    """
+    repo = get_repository()
+    job_ids = await repo.list_jobs(limit=limit, offset=offset)
+
+    jobs = []
+    for job_id in job_ids:
+        state = await repo.load_state(job_id)
+        if state:
+            jobs.append(
+                JobListItem(
+                    job_id=state.id,
+                    source_url=state.source_url,
+                    source_title=state.source_title,
+                    status=state.status,
+                    progress_pct=state.progress_pct,
+                    created_at=state.created_at,
+                )
+            )
+
+    return JobListResponse(jobs=jobs, total=len(jobs))
 
 
 @router.get("/status/{job_id}", response_model=StatusResponse)

@@ -72,15 +72,16 @@ export function useJob() {
     setError(null);
     
     try {
-      const [statusResponse, scriptResponse] = await Promise.all([
-        getJobStatus(id),
-        getScript(id).catch(() => null),
-      ]);
+      const statusResponse = await getJobStatus(id);
       
       setJobId(id);
       setStatus(statusResponse);
-      if (scriptResponse) {
-        setScript(scriptResponse);
+      
+      if (statusResponse.current_step === 'COMPLETED') {
+        const scriptResponse = await getScript(id).catch(() => null);
+        if (scriptResponse) {
+          setScript(scriptResponse);
+        }
       }
       
       window.history.replaceState(null, '', `?job=${id}`);
@@ -115,9 +116,7 @@ export function useJob() {
         });
       }
       
-      if (statusResponse.current_step === 'SCRIPTING' || 
-          statusResponse.current_step === 'DIRECTOR' ||
-          statusResponse.current_step === 'COMPLETED') {
+      if (statusResponse.current_step === 'COMPLETED') {
         const scriptResponse = await getScript(jobId).catch(() => null);
         if (scriptResponse) {
           setScript(scriptResponse);

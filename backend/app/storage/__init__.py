@@ -6,10 +6,18 @@ Supabase and Redis behind simple interfaces that the graph and API layers
 can depend on.
 """
 
-from .repository import InMemoryPodcastStateRepository, get_repository
+from .repository import (
+    InMemoryPodcastStateRepository,
+    PodcastStateRepository,
+    SupabasePodcastStateRepository,
+    get_repository,
+    reset_repository,
+)
 
 __all__ = [
     "InMemoryPodcastStateRepository",
+    "PodcastStateRepository",
+    "SupabasePodcastStateRepository",
     "get_repository",
+    "reset_repository",
 ]
-
