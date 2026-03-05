@@ -92,6 +92,20 @@ export interface StoredJob {
   final_podcast_url?: string;
 }
 
+export interface JobListItem {
+  job_id: string;
+  source_url: string;
+  source_title?: string;
+  status: JobStatus;
+  progress_pct: number;
+  created_at: string;
+}
+
+export interface JobListResponse {
+  jobs: JobListItem[];
+  total: number;
+}
+
 export const STEP_ORDER: CurrentStep[] = [
   'INGESTING',
   'RESEARCHING', 

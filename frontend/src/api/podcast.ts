@@ -6,6 +6,7 @@ import type {
   EditRequest,
   EditResponse,
   DownloadResponse,
+  JobListResponse,
 } from '../types/podcast';
 
 const API_BASE = '/api/v1/podcast';
@@ -62,4 +63,28 @@ export async function getDownload(job_id: string): Promise<DownloadResponse> {
 export async function checkHealth(): Promise<{ status: string; service: string }> {
   const response = await fetch(`${API_BASE}/health`);
   return handleResponse<{ status: string; service: string }>(response);
+}
+
+export async function listJobs(
+  limit: number = 50,
+  offset: number = 0,
+  search: string = ""
+): Promise<JobListResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    search,
+  });
+  const response = await fetch(`${API_BASE}/jobs?${params}`);
+  return handleResponse<JobListResponse>(response);
+}
+
+export async function deleteJob(job_id: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/${job_id}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
 }

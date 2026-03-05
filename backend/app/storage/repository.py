@@ -36,7 +36,9 @@ class PodcastStateRepository(Protocol):
         """Remove a job's state from storage."""
         ...
 
-    async def list_jobs(self, limit: int = 50, offset: int = 0) -> List[str]:
+    async def list_jobs(
+        self, limit: int = 50, offset: int = 0, search: str = ""
+    ) -> List[str]:
         """List job IDs, ordered by creation date (newest first)."""
         ...
 
@@ -63,13 +65,23 @@ class InMemoryPodcastStateRepository:
         """Remove a job's state from storage."""
         self._store.pop(job_id, None)
 
-    async def list_jobs(self, limit: int = 50, offset: int = 0) -> List[str]:
+    async def list_jobs(
+        self, limit: int = 50, offset: int = 0, search: str = ""
+    ) -> List[str]:
         """List job IDs, ordered by creation date (newest first)."""
         jobs = sorted(
             self._store.values(),
             key=lambda s: s.created_at,
             reverse=True,
         )
+        if search:
+            search_lower = search.lower()
+            jobs = [
+                j
+                for j in jobs
+                if (j.source_title and search_lower in j.source_title.lower())
+                or search_lower in j.source_url.lower()
+            ]
         return [job.id for job in jobs[offset : offset + limit]]
 
 
@@ -172,17 +184,34 @@ class SupabasePodcastStateRepository:
 
     async def delete_state(self, job_id: str) -> None:
         """Remove a job and all related data from Supabase."""
+        try:
+            from .supabase_client import get_storage_bucket_name
+
+            bucket = get_storage_bucket_name()
+            files = self._client.storage.from_(bucket).list(job_id)
+            if files:
+                file_paths = [f"{job_id}/{f['name']}" for f in files]
+                self._client.storage.from_(bucket).remove(file_paths)
+        except Exception:
+            pass
+
         self._client.table("podcast_jobs").delete().eq("id", job_id).execute()
 
-    async def list_jobs(self, limit: int = 50, offset: int = 0) -> List[str]:
+    async def list_jobs(
+        self, limit: int = 50, offset: int = 0, search: str = ""
+    ) -> List[str]:
         """List job IDs, ordered by creation date (newest first)."""
-        response = (
+        query = (
             self._client.table("podcast_jobs")
             .select("id")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
-            .execute()
         )
+        if search:
+            query = query.or_(
+                f"source_title.ilike.%{search}%,source_url.ilike.%{search}%"
+            )
+        response = query.execute()
 
         return [row["id"] for row in response.data]
 

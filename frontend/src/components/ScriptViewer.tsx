@@ -43,7 +43,7 @@ function parseScript(script: string): ParsedLine[] {
 }
 
 export function ScriptViewer({ script, sourceTitle, onEdit, canEdit }: ScriptViewerProps) {
-  const lines = useMemo(() => parseScript(script), [script]);
+  const lines = useMemo(() => parseScript(script ?? ''), [script]);
 
   if (!script || lines.length === 0) {
     return (

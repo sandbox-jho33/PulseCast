@@ -3,9 +3,11 @@ Podcast API routes for PulseCast.
 
 Endpoints:
 - POST /generate: Start a new podcast generation job
+- GET /jobs: List all podcast jobs
 - GET /status/{job_id}: Get current status of a job
 - GET /download/{job_id}: Download the final podcast
 - PATCH /edit: Edit the script and optionally resume
+- DELETE /{job_id}: Delete a podcast job
 """
 
 from __future__ import annotations
@@ -118,14 +120,16 @@ async def generate_podcast(
 async def list_podcast_jobs(
     limit: int = 50,
     offset: int = 0,
+    search: str = "",
 ) -> JobListResponse:
     """
     List all podcast generation jobs.
 
     Returns a paginated list of jobs ordered by creation date (newest first).
+    Optional search filter matches against source_title and source_url.
     """
     repo = get_repository()
-    job_ids = await repo.list_jobs(limit=limit, offset=offset)
+    job_ids = await repo.list_jobs(limit=limit, offset=offset, search=search)
 
     jobs = []
     for job_id in job_ids:
@@ -310,3 +314,21 @@ async def get_script(
         "script_version": state.script_version,
         "source_title": state.source_title,
     }
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_podcast(
+    job_id: str = Path(..., description="Podcast generation job identifier."),
+) -> None:
+    """
+    Delete a podcast job and all associated data.
+
+    Removes the job record, scripts, audio segments, and audio files from storage.
+    """
+    repo = get_repository()
+    state = await repo.load_state(job_id)
+
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    await repo.delete_state(job_id)
