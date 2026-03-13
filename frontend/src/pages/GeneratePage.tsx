@@ -193,7 +193,7 @@ export function GeneratePage() {
                         />
                       ) : script ? (
                         <ScriptViewer
-                          key="viewer"
+                          key={`viewer-${isComplete ? 'complete' : 'progress'}`}
                           script={script.script}
                           sourceTitle={status.source_title}
                           onEdit={canEdit ? handleEdit : undefined}

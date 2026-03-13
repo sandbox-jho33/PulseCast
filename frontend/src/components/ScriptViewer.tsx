@@ -48,7 +48,7 @@ function parseScript(script: string): ParsedLine[] {
 export function ScriptViewer({ script, sourceTitle, onEdit, canEdit, shouldTruncate = false }: ScriptViewerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const allLines = useMemo(() => parseScript(script ?? ''), [script]);
-  
+
   const hasMoreLines = allLines.length > PREVIEW_LINE_COUNT;
   const showTruncation = shouldTruncate && hasMoreLines && !isExpanded;
   const visibleLines = showTruncation ? allLines.slice(0, PREVIEW_LINE_COUNT) : allLines;
