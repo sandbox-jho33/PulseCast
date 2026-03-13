@@ -12,7 +12,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime
 
@@ -34,7 +33,6 @@ from ...models.state import (
     apply_update,
     new_state,
 )
-from ...services.audio import synthesize_podcast_audio
 from ...services.ingestion import ingest_source
 from ...storage.repository import get_repository
 
@@ -66,20 +64,6 @@ async def _run_podcast_workflow(job_id: str) -> None:
         state = await graph.run(state)
         state.updated_at = datetime.utcnow()
         await repo.save_state(state)
-
-        if state.director_decision and state.director_decision.value == "APPROVE":
-            state.current_step = CurrentStep.AUDIO
-            state.progress_pct = 90
-            state.updated_at = datetime.utcnow()
-            await repo.save_state(state)
-
-            audio_result = await synthesize_podcast_audio(state.script or "", job_id)
-            state.duration_seconds = audio_result.duration_seconds
-            state.progress_pct = 100
-            state.current_step = CurrentStep.COMPLETED
-            state.status = JobStatus.COMPLETED
-            state.updated_at = datetime.utcnow()
-            await repo.save_state(state)
 
     except Exception as e:
         state = await repo.load_state(job_id)
@@ -273,20 +257,6 @@ async def _resume_from_director(job_id: str) -> None:
         state = await graph.run(state)
         state.updated_at = datetime.utcnow()
         await repo.save_state(state)
-
-        if state.director_decision and state.director_decision.value == "APPROVE":
-            state.current_step = CurrentStep.AUDIO
-            state.progress_pct = 90
-            state.updated_at = datetime.utcnow()
-            await repo.save_state(state)
-
-            audio_result = await synthesize_podcast_audio(state.script or "", job_id)
-            state.duration_seconds = audio_result.duration_seconds
-            state.progress_pct = 100
-            state.current_step = CurrentStep.COMPLETED
-            state.status = JobStatus.COMPLETED
-            state.updated_at = datetime.utcnow()
-            await repo.save_state(state)
 
     except Exception as e:
         state = await repo.load_state(job_id)

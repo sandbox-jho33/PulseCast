@@ -1,0 +1,33 @@
+services:
+  tts:
+    build:
+      context: ./docker/tts
+      dockerfile: Dockerfile
+    container_name: pulsecast-tts
+    ports:
+      - "5002:5002"
+    volumes:
+      - tts-models:/root/.local/share/tts
+      - tts-output:/app/output
+    environment:
+      - TTS_PORT=5002
+      - LEO_SPEAKER=Damien Black
+      - SARAH_SPEAKER=Ana Florence
+      - COQUI_TOS_AGREED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+
+volumes:
+  tts-models:
+    name: pulsecast-tts-models
+  tts-output:
+    name: pulsecast-tts-output

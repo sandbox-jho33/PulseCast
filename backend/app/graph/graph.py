@@ -47,6 +47,9 @@ class GraphState(TypedDict):
     critique_limit: int
     director_decision: str
     error_message: str
+    audio_segments: list[dict]
+    final_podcast_url: str
+    duration_seconds: float
 
 
 def _get_llm():
@@ -70,18 +73,29 @@ def _state_to_graph(state: PodcastState) -> GraphState:
         current_step=state.current_step.value,
         progress_pct=state.progress_pct,
         turn_count=0,
-        min_words=1500,
+        min_words=1000,
         critique_count=state.critique_count,
         critique_limit=state.critique_limit,
         director_decision=state.director_decision.value
         if state.director_decision
         else "",
         error_message=state.error_message or "",
+        audio_segments=[],
+        final_podcast_url=state.final_podcast_url or "",
+        duration_seconds=state.duration_seconds or 0.0,
     )
 
 
 def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> PodcastState:
     """Convert GraphState back to PodcastState."""
+    from ..models.state import AudioSegment as AudioSegmentModel
+
+    audio_segments = None
+    if graph_state.get("audio_segments"):
+        audio_segments = [
+            AudioSegmentModel(**seg) for seg in graph_state["audio_segments"]
+        ]
+
     return PodcastState(
         id=base_state.id,
         source_url=base_state.source_url,
@@ -101,6 +115,9 @@ def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> Podcas
         if graph_state["director_decision"]
         else None,
         error_message=graph_state["error_message"] or None,
+        audio_segments=audio_segments,
+        final_podcast_url=graph_state.get("final_podcast_url") or None,
+        duration_seconds=graph_state.get("duration_seconds") or None,
     )
 
 
@@ -146,7 +163,7 @@ POINTS ALREADY COVERED (don't repeat these):
 CURRENT SCRIPT SO FAR:
 {script}
 
-Write 100-150 words. Start with "LEO:" - remember you're having a natural conversation."""
+Write a substantial, meaningful contribution. Focus on depth and natural conversation flow. Start with "LEO:" - remember you're having a natural conversation."""
 
 
 SARAH_SYSTEM = """You are Sarah, a thoughtful podcast co-host who brings depth and nuance to conversations. You're not cynical, but you like to dig deeper.
@@ -174,18 +191,21 @@ POINTS ALREADY COVERED (don't repeat these):
 CURRENT SCRIPT SO FAR:
 {script}
 
-Write 100-150 words. Start with "SARAH:" - remember you're having a natural conversation."""
+Write a substantial, meaningful contribution. Focus on depth and natural conversation flow. Start with "SARAH:" - remember you're having a natural conversation."""
 
 
-DIRECTOR_SYSTEM = """You are a podcast director reviewing the script for quality issues.
+DIRECTOR_SYSTEM = """You are a podcast director reviewing the script.
+
+APPROVAL CRITERIA (in order of priority):
+1. COVERAGE: Have most knowledge points (75%+) been discussed with substance?
+2. QUALITY: No repetition, no topic drift, no stage directions, no false endings
+3. MINIMUM LENGTH: Script should be at least 1000 words (no upper limit - let coverage determine length)
 
 CRITICAL QUALITY CHECKS:
-1. TOPIC DRIFT: Are the hosts discussing ONLY the provided knowledge points? Reject if they've drifted to unrelated topics (neuroscience terms, random concepts not in the source).
-2. REPETITION: Are there repeated phrases like "That's a great point", "Absolutely", "Exactly" appearing multiple times? Reject.
-3. FALSE ENDINGS: Are there multiple "In conclusion" or "To wrap up" sections? There should only be ONE ending.
-4. STAGE DIRECTIONS: Are there parentheticals like (smiling), (nodding)? These should not exist.
-5. COVERAGE: Have most knowledge points been discussed with substance?
-6. LENGTH: Is the script substantive (1500+ words)?
+- TOPIC DRIFT: Are the hosts discussing ONLY the provided knowledge points? Reject if they've drifted to unrelated topics.
+- REPETITION: Are there repeated phrases like "That's a great point", "Absolutely" appearing 3+ times? Reject.
+- FALSE ENDINGS: Are there multiple "In conclusion" or "To wrap up" sections? There should only be ONE ending.
+- STAGE DIRECTIONS: Are there parentheticals like (smiling), (nodding)? These should not exist.
 
 KNOWLEDGE POINTS (hosts should ONLY discuss these):
 {knowledge_points}
@@ -193,15 +213,15 @@ KNOWLEDGE POINTS (hosts should ONLY discuss these):
 POINTS ALREADY DISCUSSED:
 {covered_points}
 
-WORD COUNT: {word_count} (target: {min_words})
+WORD COUNT: {word_count} (minimum: 1000)
 
-If there are QUALITY ISSUES (drift, repetition, false endings, stage directions), output:
-"ISSUES: [list the specific problems found]"
+If quality issues exist (drift, repetition, false endings, stage directions), output:
+"ISSUES: [list problems]"
 
-If the script is good but needs more content on uncovered points, output:
+If coverage is incomplete OR word count is below 1000, output:
 "CONTINUE: [which knowledge points need discussion]"
 
-If the script is complete and high-quality, output:
+If coverage is good (75%+), word count >= 1000, and no quality issues, output:
 "APPROVE"
 
 Script to review:
@@ -515,9 +535,9 @@ async def leo_node(state: GraphState) -> Dict[str, Any]:
     )
 
     if not existing_script:
-        intro_prompt = """Start the podcast with a natural, engaging intro (150-200 words). 
+        intro_prompt = """Start the podcast with a natural, engaging intro.
 Introduce yourselves briefly as Leo and Sarah, hook the listener with why this topic matters, 
-then dive into discussing ONE specific knowledge point in detail.
+then dive into discussing ONE specific knowledge point in depth.
 Start your lines with "LEO:" and write like you're actually talking to someone."""
     else:
         quality_issues = _detect_quality_issues(existing_script)
@@ -532,14 +552,14 @@ IMPORTANT - Fix these issues in your response:
 {chr(10).join(f"- {issue}" for issue in all_issues[:3])}"""
 
         if uncovered_points:
-            intro_prompt = f"""Continue the conversation naturally (150-200 words).
+            intro_prompt = f"""Continue the conversation naturally.
 Pick ONE uncovered knowledge point and discuss it in depth. Quote specific details from it.
 Do NOT introduce new topics outside the knowledge points.{issues_warning}
 
 UNCOVERED POINTS TO DISCUSS:
 {uncovered_points_str}"""
         else:
-            intro_prompt = f"""Provide a natural, brief conclusion (100-150 words).
+            intro_prompt = f"""Provide a natural conclusion.
 Summarize the key insights discussed. Say goodbye naturally ONCE - don't repeat sign-offs.
 This is the FINAL segment of the podcast.{issues_warning}"""
 
@@ -606,14 +626,14 @@ IMPORTANT - Avoid these issues seen in the script:
 {chr(10).join(f"- {issue}" for issue in all_issues[:3])}"""
 
     if uncovered_points:
-        continue_prompt = f"""Respond naturally (150-200 words) to what Leo said.
+        continue_prompt = f"""Respond naturally to what Leo said.
 Pick ONE uncovered knowledge point and add depth or a different perspective. Quote specific details.
 Do NOT introduce topics outside the knowledge points.{issues_warning}
 
 UNCOVERED POINTS TO DISCUSS:
 {uncovered_points_str}"""
     else:
-        continue_prompt = f"""Help provide a natural, brief conclusion (100-150 words).
+        continue_prompt = f"""Help provide a natural conclusion.
 Build on Leo's conclusion naturally. Don't repeat sign-offs.
 This is the FINAL segment.{issues_warning}"""
 
@@ -646,12 +666,13 @@ This is the FINAL segment.{issues_warning}"""
 async def director_node(state: GraphState) -> Dict[str, Any]:
     """
     Review the script and decide APPROVE or CONTINUE.
+    Coverage-first approach with 1000-word minimum floor.
     """
     llm = _get_llm()
 
     script = state["script"]
     knowledge_points_list = state.get("knowledge_points_list", [])
-    min_words = state.get("min_words", 1500)
+    min_words = state.get("min_words", 1000)
     turn_count = state.get("turn_count", 0)
 
     word_count = _count_words(script)
@@ -671,31 +692,13 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
         "\n".join(f"- {p}" for p in updated_covered) if updated_covered else "None yet"
     )
 
-    pause_script = _add_pauses(script)
-
-    messages = [
-        SystemMessage(
-            content=DIRECTOR_SYSTEM.format(
-                script=pause_script,
-                knowledge_points=knowledge_points_str,
-                covered_points=covered_points_str,
-                word_count=word_count,
-                min_words=min_words,
-            )
-        ),
-        HumanMessage(
-            content="Review this script for quality issues and coverage. Decide: APPROVE, ISSUES, or CONTINUE."
-        ),
-    ]
-
-    response = await llm.ainvoke(messages)
-    decision_text = str(response.content).strip()
-
     coverage_ratio = (
         len(updated_covered) / len(knowledge_points_list)
         if knowledge_points_list
         else 1.0
     )
+
+    pause_script = _add_pauses(script)
 
     max_turns = 16
     if turn_count >= max_turns:
@@ -709,14 +712,8 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
             "error_message": f"Reached max turns ({max_turns}). Auto-approved with {coverage_ratio:.0%} coverage, {word_count} words.",
         }
 
-    if "ISSUES:" in decision_text.upper() or len(all_quality_issues) >= 3:
-        guidance = (
-            decision_text.replace("ISSUES:", "").strip()
-            if "ISSUES:" in decision_text
-            else ""
-        )
-        if all_quality_issues:
-            guidance += "\n\nDetected issues: " + "; ".join(all_quality_issues[:3])
+    if len(all_quality_issues) >= 3:
+        guidance = "Quality issues detected: " + "; ".join(all_quality_issues[:3])
         if uncovered_points:
             guidance += f"\n\nStill need to cover: {', '.join(uncovered_points[:2])}"
 
@@ -728,7 +725,38 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
             "error_message": guidance,
         }
 
-    if decision_text.upper().startswith("APPROVE"):
+    has_good_coverage = coverage_ratio >= 0.75
+    meets_min_words = word_count >= min_words
+
+    if has_good_coverage and meets_min_words:
+        messages = [
+            SystemMessage(
+                content=DIRECTOR_SYSTEM.format(
+                    script=pause_script,
+                    knowledge_points=knowledge_points_str,
+                    covered_points=covered_points_str,
+                    word_count=word_count,
+                    min_words=min_words,
+                )
+            ),
+            HumanMessage(
+                content="Review this script for final approval. If quality is good, output APPROVE."
+            ),
+        ]
+
+        response = await llm.ainvoke(messages)
+        decision_text = str(response.content).strip()
+
+        if "ISSUES:" in decision_text.upper():
+            guidance = decision_text.replace("ISSUES:", "").strip()
+            return {
+                "script": pause_script,
+                "director_decision": DirectorDecision.CONTINUE.value,
+                "covered_points": updated_covered,
+                "current_step": CurrentStep.DIRECTOR.value,
+                "error_message": guidance,
+            }
+
         return {
             "script": pause_script,
             "director_decision": DirectorDecision.APPROVE.value,
@@ -737,23 +765,24 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
             "current_step": CurrentStep.DIRECTOR.value,
             "progress_pct": 85,
         }
-    else:
-        guidance = (
-            decision_text.replace("CONTINUE:", "").strip()
-            if "CONTINUE:" in decision_text
-            else "Continue the discussion"
-        )
 
+    guidance_parts = []
+    if not has_good_coverage:
+        guidance_parts.append(f"Coverage at {coverage_ratio:.0%}, need 75%+")
         if uncovered_points:
-            guidance += f"\n\nUncovered points: {', '.join(uncovered_points[:3])}"
+            guidance_parts.append(f"Uncovered: {', '.join(uncovered_points[:3])}")
+    if not meets_min_words:
+        guidance_parts.append(f"Word count at {word_count}, need {min_words}+")
 
-        return {
-            "script": pause_script,
-            "director_decision": DirectorDecision.CONTINUE.value,
-            "covered_points": updated_covered,
-            "current_step": CurrentStep.DIRECTOR.value,
-            "error_message": guidance,
-        }
+    guidance = "\n".join(guidance_parts)
+
+    return {
+        "script": pause_script,
+        "director_decision": DirectorDecision.CONTINUE.value,
+        "covered_points": updated_covered,
+        "current_step": CurrentStep.DIRECTOR.value,
+        "error_message": guidance,
+    }
 
 
 def _add_pauses(script: str) -> str:
@@ -781,12 +810,62 @@ def _add_pauses(script: str) -> str:
     return "\n".join(result)
 
 
-def _should_continue(state: GraphState) -> Literal["leo", "end"]:
-    """Determine if we should loop back to leo or end."""
+async def audio_node(state: GraphState) -> Dict[str, Any]:
+    """
+    Generate audio from the approved script.
+
+    This node runs after the director approves the script.
+    It synthesizes TTS audio for each segment and combines
+    them into a final podcast file.
+    """
+    import logging
+
+    from ..services.audio import synthesize_podcast_audio
+
+    logger = logging.getLogger(__name__)
+
+    job_id = state["job_id"]
+    script = state["script"]
+
+    logger.info(f"Starting audio synthesis for job {job_id}")
+
+    try:
+        result = await synthesize_podcast_audio(script, job_id)
+
+        audio_segments = [
+            {
+                "speaker": seg.speaker,
+                "text": seg.text,
+                "audio_url": seg.audio_url,
+            }
+            for seg in result.segments
+        ]
+
+        logger.info(f"Audio synthesis complete: {result.final_url}")
+
+        return {
+            "audio_segments": audio_segments,
+            "final_podcast_url": result.final_url or "",
+            "duration_seconds": result.duration_seconds,
+            "current_step": CurrentStep.COMPLETED.value,
+            "progress_pct": 100,
+            "status": JobStatus.COMPLETED.value,
+        }
+    except Exception as e:
+        logger.error(f"Audio synthesis failed: {e}")
+        return {
+            "error_message": f"Audio synthesis failed: {str(e)}",
+            "current_step": CurrentStep.AUDIO.value,
+            "status": JobStatus.FAILED.value,
+        }
+
+
+def _should_continue(state: GraphState) -> Literal["leo", "audio", "end"]:
+    """Determine if we should loop back to leo, go to audio, or end."""
     decision = state.get("director_decision")
 
     if decision == DirectorDecision.APPROVE.value:
-        return "end"
+        return "audio"
 
     if decision == DirectorDecision.CONTINUE.value:
         return "leo"
@@ -802,6 +881,7 @@ def create_podcast_graph() -> StateGraph:
     graph.add_node("leo", leo_node)
     graph.add_node("sarah", sarah_node)
     graph.add_node("director", director_node)
+    graph.add_node("audio", audio_node)
 
     graph.set_entry_point("researcher")
     graph.add_edge("researcher", "leo")
@@ -813,9 +893,11 @@ def create_podcast_graph() -> StateGraph:
         _should_continue,
         {
             "leo": "leo",
-            "end": END,
+            "audio": "audio",
         },
     )
+
+    graph.add_edge("audio", END)
 
     return graph
 
