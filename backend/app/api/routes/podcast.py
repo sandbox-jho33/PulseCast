@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path as FilePath
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
+from fastapi.responses import FileResponse
 
 from ...graph.graph import get_graph_runner
 from ...models.state import (
@@ -34,6 +36,7 @@ from ...models.state import (
     new_state,
 )
 from ...services.ingestion import ingest_source
+from ...services.audio import get_local_audio_path
 from ...storage.repository import get_repository
 
 router = APIRouter()
@@ -171,6 +174,7 @@ async def get_podcast_status(
         script_version=state.script_version,
         source_title=state.source_title,
         final_podcast_url=state.final_podcast_url,
+        duration_seconds=state.duration_seconds,
         error_message=state.error_message,
     )
 
@@ -205,6 +209,31 @@ async def download_podcast(
     return DownloadResponse(
         final_podcast_url=state.final_podcast_url,
         duration_seconds=state.duration_seconds,
+    )
+
+
+@router.get("/local-audio/{job_id}.{extension}")
+async def get_local_audio(
+    job_id: str = Path(..., description="Podcast generation job identifier."),
+    extension: str = Path(..., description="Audio extension (mp3 or wav)."),
+) -> FileResponse:
+    """
+    Serve locally saved audio files for development mode playback.
+
+    This endpoint is used when Supabase Storage is not configured.
+    """
+    allowed_extensions = {"mp3": "audio/mpeg", "wav": "audio/wav"}
+    if extension not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="Unsupported audio extension")
+
+    audio_path = FilePath(get_local_audio_path(job_id, extension))
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local audio for job {job_id} not found")
+
+    return FileResponse(
+        path=audio_path,
+        media_type=allowed_extensions[extension],
+        filename=f"{job_id}.{extension}",
     )
 
 

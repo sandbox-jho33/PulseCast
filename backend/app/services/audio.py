@@ -13,9 +13,10 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+_LOCAL_AUDIO_DIR = "pulsecast"
 
 
 @dataclass
@@ -146,7 +147,7 @@ async def synthesize_segment(
 def stitch_audio_with_pydub(
     segments: List[AudioSegment],
     pause_ms: int = 500,
-) -> bytes:
+) -> Tuple[bytes, str]:
     """
     Stitch audio segments together with pauses using pydub.
 
@@ -155,7 +156,7 @@ def stitch_audio_with_pydub(
         pause_ms: Pause duration in milliseconds between segments
 
     Returns:
-        Combined audio bytes (MP3 format)
+        Tuple of (combined audio bytes, file format extension)
     """
     try:
         from pydub import AudioSegment as PydubAudioSegment
@@ -184,12 +185,34 @@ def stitch_audio_with_pydub(
                 logger.warning(f"Failed to add segment {i}: {e}")
 
     buffer = io.BytesIO()
-    combined.export(buffer, format="mp3", bitrate="128k")
-    buffer.seek(0)
-    return buffer.read()
+    try:
+        combined.export(buffer, format="mp3", bitrate="128k")
+        buffer.seek(0)
+        return buffer.read(), "mp3"
+    except Exception as exc:
+        logger.warning("MP3 export failed, falling back to WAV: %s", exc)
+        buffer = io.BytesIO()
+        combined.export(buffer, format="wav")
+        buffer.seek(0)
+        return buffer.read(), "wav"
 
 
-def save_audio_locally(audio_bytes: bytes, job_id: str) -> str:
+def get_local_audio_path(job_id: str, extension: str = "mp3") -> str:
+    """Get canonical local audio path for a job."""
+    output_dir = os.path.join(tempfile.gettempdir(), _LOCAL_AUDIO_DIR)
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, f"{job_id}.{extension}")
+
+
+def get_local_audio_url(job_id: str, extension: str = "mp3") -> str:
+    """Get browser-accessible URL for locally saved audio."""
+    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip(
+        "/"
+    )
+    return f"{backend_public_url}/api/v1/podcast/local-audio/{job_id}.{extension}"
+
+
+def save_audio_locally(audio_bytes: bytes, job_id: str, extension: str = "mp3") -> str:
     """
     Save audio to a local file for development.
 
@@ -200,10 +223,7 @@ def save_audio_locally(audio_bytes: bytes, job_id: str) -> str:
     Returns:
         Path to the saved file
     """
-    output_dir = os.path.join(tempfile.gettempdir(), "pulsecast")
-    os.makedirs(output_dir, exist_ok=True)
-
-    output_path = os.path.join(output_dir, f"{job_id}.mp3")
+    output_path = get_local_audio_path(job_id, extension)
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
 
@@ -252,29 +272,34 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
         )
 
     try:
-        final_audio = stitch_audio_with_pydub(segments)
+        final_audio, final_format = stitch_audio_with_pydub(segments)
         logger.info(f"Stitched audio: {len(final_audio)} bytes")
     except Exception as e:
         logger.error(f"Failed to stitch audio: {e}")
         final_audio = None
+        final_format = "mp3"
 
     final_url = None
     duration_seconds = 0.0
 
     if final_audio:
         if os.getenv("SUPABASE_URL"):
-            file_path = f"{job_id}/podcast.mp3"
+            file_path = f"{job_id}/podcast.{final_format}"
+            content_type = "audio/mpeg" if final_format == "mp3" else "audio/wav"
             final_url = await upload_audio_to_storage(
-                final_audio, file_path, "audio/mpeg"
+                final_audio, file_path, content_type
             )
         else:
-            local_path = save_audio_locally(final_audio, job_id)
-            final_url = f"file://{local_path}"
+            save_audio_locally(final_audio, job_id, final_format)
+            final_url = get_local_audio_url(job_id, final_format)
 
         try:
             from pydub import AudioSegment as PydubAudioSegment
 
-            audio = PydubAudioSegment.from_mp3(io.BytesIO(final_audio))
+            if final_format == "wav":
+                audio = PydubAudioSegment.from_wav(io.BytesIO(final_audio))
+            else:
+                audio = PydubAudioSegment.from_mp3(io.BytesIO(final_audio))
             duration_seconds = len(audio) / 1000.0
         except Exception:
             duration_seconds = (
@@ -322,4 +347,5 @@ async def stitch_audio_segments(
     audio_segments = [
         AudioSegment(speaker="UNKNOWN", text="", audio_bytes=s) for s in segments
     ]
-    return stitch_audio_with_pydub(audio_segments)
+    stitched, _fmt = stitch_audio_with_pydub(audio_segments)
+    return stitched

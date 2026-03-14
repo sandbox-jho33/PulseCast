@@ -129,6 +129,11 @@ export function GeneratePage() {
   const hasJob = !!status;
   const isComplete = status?.status === 'COMPLETED';
   const isFailed = status?.status === 'FAILED';
+  const isCompleteWithoutAudio = isComplete && !status?.final_podcast_url;
+  const workflowErrorMessage = status?.error_message
+    ?? (isCompleteWithoutAudio
+      ? 'Podcast is marked completed but no playable audio URL is available.'
+      : null);
   const canEdit = hasJob && !isPolling && (status?.current_step === 'SCRIPTING' || status?.current_step === 'DIRECTOR' || isComplete || isFailed);
 
   return (
@@ -212,6 +217,12 @@ export function GeneratePage() {
                       )}
                     </AnimatePresence>
                   </div>
+
+                  {(isFailed || isCompleteWithoutAudio) && workflowErrorMessage && (
+                    <div className="mb-4">
+                      <ErrorState message={workflowErrorMessage} />
+                    </div>
+                  )}
 
                   <AudioPlayer
                     audioUrl={status.final_podcast_url}

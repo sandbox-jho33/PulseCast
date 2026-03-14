@@ -841,11 +841,25 @@ async def audio_node(state: GraphState) -> Dict[str, Any]:
             for seg in result.segments
         ]
 
+        if not result.final_url:
+            logger.error("Audio synthesis produced no playable URL for job %s", job_id)
+            return {
+                "audio_segments": audio_segments,
+                "final_podcast_url": "",
+                "duration_seconds": result.duration_seconds,
+                "current_step": CurrentStep.AUDIO.value,
+                "status": JobStatus.FAILED.value,
+                "error_message": (
+                    "Audio generation failed: no playable audio file URL was created. "
+                    "Check TTS, ffmpeg, and storage configuration."
+                ),
+            }
+
         logger.info(f"Audio synthesis complete: {result.final_url}")
 
         return {
             "audio_segments": audio_segments,
-            "final_podcast_url": result.final_url or "",
+            "final_podcast_url": result.final_url,
             "duration_seconds": result.duration_seconds,
             "current_step": CurrentStep.COMPLETED.value,
             "progress_pct": 100,

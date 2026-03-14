@@ -137,6 +137,7 @@ class StatusResponse(BaseModel):
     script_version: int
     source_title: Optional[str]
     final_podcast_url: Optional[str]
+    duration_seconds: Optional[float] = None
     error_message: Optional[str]
 
 
