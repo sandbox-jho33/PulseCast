@@ -14,3 +14,5 @@ env/
 test.wav
 test_*.wav
 *.test.log
+
+.codex
