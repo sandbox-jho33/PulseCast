@@ -14,17 +14,27 @@ from supabase import Client, create_client
 _supabase_client: Optional[Client] = None
 
 
+def _get_supabase_key() -> Optional[str]:
+    """Get the best available Supabase API key from environment variables."""
+    return (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+    )
+
+
 def get_supabase_client() -> Client:
     """Get the singleton Supabase client instance."""
     global _supabase_client
     if _supabase_client is None:
         url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        key = _get_supabase_key()
 
         if not url or not key:
             raise RuntimeError(
-                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY) "
-                "must be set in environment variables"
+                "SUPABASE_URL and one Supabase key must be set. Use "
+                "SUPABASE_SERVICE_ROLE_KEY (preferred), SUPABASE_SERVICE_KEY, "
+                "or SUPABASE_ANON_KEY."
             )
 
         _supabase_client = create_client(url, key)
