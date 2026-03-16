@@ -85,13 +85,16 @@ export function GeneratePage() {
     status,
     script,
     isLoading,
+    isRetryingAudio,
     error,
     isPolling,
+    canRetryAudio,
     recentJobs,
     startGeneration,
     loadJob,
     pollStatus,
     editScript,
+    retryAudio,
     setError,
   } = useJob();
 
@@ -129,11 +132,16 @@ export function GeneratePage() {
   const hasJob = !!status;
   const isComplete = status?.status === 'COMPLETED';
   const isFailed = status?.status === 'FAILED';
-  const isCompleteWithoutAudio = isComplete && !status?.final_podcast_url;
+  const hasPlayableAudioUrl = !!status?.final_podcast_url && !status.final_podcast_url.startsWith('file://');
+  const isCompleteWithoutAudio = isComplete && !hasPlayableAudioUrl;
+  const shouldTruncate = !!script && ['DIRECTOR', 'AUDIO', 'COMPLETED'].includes(status?.current_step ?? '');
   const workflowErrorMessage = status?.error_message
     ?? (isCompleteWithoutAudio
-      ? 'Podcast is marked completed but no playable audio URL is available.'
+      ? status?.final_podcast_url?.startsWith('file://')
+        ? 'Podcast completed with a local file path that the browser cannot play. Retry synthesis to regenerate a playable URL.'
+        : 'Podcast is marked completed but no playable audio URL is available.'
       : null);
+  const showRetrySynthesis = !!workflowErrorMessage && canRetryAudio && !isPolling;
   const canEdit = hasJob && !isPolling && (status?.current_step === 'SCRIPTING' || status?.current_step === 'DIRECTOR' || isComplete || isFailed);
 
   return (
@@ -203,7 +211,7 @@ export function GeneratePage() {
                           sourceTitle={status.source_title}
                           onEdit={canEdit ? handleEdit : undefined}
                           canEdit={canEdit}
-                          shouldTruncate={isComplete}
+                          shouldTruncate={shouldTruncate}
                         />
                       ) : (
                         <motion.div
@@ -220,12 +228,18 @@ export function GeneratePage() {
 
                   {(isFailed || isCompleteWithoutAudio) && workflowErrorMessage && (
                     <div className="mb-4">
-                      <ErrorState message={workflowErrorMessage} />
+                      <ErrorState
+                        message={workflowErrorMessage}
+                        onRetry={showRetrySynthesis ? retryAudio : undefined}
+                        retryLabel="Retry synthesis"
+                        retryHint={showRetrySynthesis ? 'Reuse existing script; no rewrite needed.' : undefined}
+                        isRetrying={isRetryingAudio}
+                      />
                     </div>
                   )}
 
                   <AudioPlayer
-                    audioUrl={status.final_podcast_url}
+                    audioUrl={hasPlayableAudioUrl ? status.final_podcast_url : undefined}
                     durationSeconds={status.duration_seconds}
                   />
 

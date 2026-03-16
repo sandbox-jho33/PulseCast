@@ -6,6 +6,7 @@ Endpoints:
 - GET /jobs: List all podcast jobs
 - GET /status/{job_id}: Get current status of a job
 - GET /download/{job_id}: Download the final podcast
+- POST /{job_id}/retry-audio: Retry only TTS/audio synthesis
 - PATCH /edit: Edit the script and optionally resume
 - DELETE /{job_id}: Delete a podcast job
 """
@@ -21,6 +22,7 @@ from fastapi.responses import FileResponse
 
 from ...graph.graph import get_graph_runner
 from ...models.state import (
+    AudioSegment,
     CurrentStep,
     DownloadResponse,
     EditRequest,
@@ -32,14 +34,29 @@ from ...models.state import (
     JobStatus,
     PodcastState,
     StatusResponse,
-    apply_update,
     new_state,
 )
+from ...services.audio import get_local_audio_path, synthesize_podcast_audio
 from ...services.ingestion import ingest_source
 from ...services.audio import get_local_audio_path
 from ...storage.repository import get_repository
 
 router = APIRouter()
+
+
+def _is_retryable_audio_state(state: PodcastState) -> bool:
+    """Return True if this job can retry TTS synthesis without regenerating script."""
+    has_unplayable_url = state.final_podcast_url and state.final_podcast_url.startswith(
+        "file://"
+    )
+    failed_at_audio = (
+        state.status == JobStatus.FAILED and state.current_step == CurrentStep.AUDIO
+    )
+    completed_without_audio = (
+        state.status == JobStatus.COMPLETED
+        and (not state.final_podcast_url or has_unplayable_url)
+    )
+    return failed_at_audio or completed_without_audio
 
 
 async def _run_podcast_workflow(job_id: str) -> None:
@@ -154,7 +171,7 @@ async def get_podcast_status(
     current_step = state.current_step
     progress_pct = state.progress_pct
 
-    if state.status == JobStatus.RUNNING:
+    if state.status == JobStatus.RUNNING and state.current_step != CurrentStep.AUDIO:
         graph = get_graph_runner()
         checkpoint_state = await graph.get_current_state(job_id)
         if checkpoint_state:
@@ -217,23 +234,88 @@ async def get_local_audio(
     job_id: str = Path(..., description="Podcast generation job identifier."),
     extension: str = Path(..., description="Audio extension (mp3 or wav)."),
 ) -> FileResponse:
-    """
-    Serve locally saved audio files for development mode playback.
-
-    This endpoint is used when Supabase Storage is not configured.
-    """
+    """Serve locally generated audio files in development."""
     allowed_extensions = {"mp3": "audio/mpeg", "wav": "audio/wav"}
     if extension not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Unsupported audio extension")
 
     audio_path = FilePath(get_local_audio_path(job_id, extension))
     if not audio_path.exists():
-        raise HTTPException(status_code=404, detail=f"Local audio for job {job_id} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Local audio for job {job_id} not found",
+        )
 
     return FileResponse(
         path=audio_path,
         media_type=allowed_extensions[extension],
         filename=f"{job_id}.{extension}",
+    )
+
+
+@router.post(
+    "/{job_id}/retry-audio",
+    response_model=StatusResponse,
+    status_code=202,
+)
+async def retry_audio_synthesis(
+    background_tasks: BackgroundTasks,
+    job_id: str = Path(..., description="Podcast generation job identifier."),
+) -> StatusResponse:
+    """
+    Retry TTS/audio synthesis from the existing persisted script.
+
+    This path skips ingestion and graph script-generation nodes.
+    """
+    repo = get_repository()
+    state = await repo.load_state(job_id)
+
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if not state.script or not state.script.strip():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job {job_id} has no script to synthesize",
+        )
+
+    if state.status == JobStatus.RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job {job_id} is already running",
+        )
+
+    if not _is_retryable_audio_state(state):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Job {job_id} is not in a retryable audio state "
+                f"(status={state.status}, step={state.current_step})"
+            ),
+        )
+
+    state.status = JobStatus.RUNNING
+    state.current_step = CurrentStep.AUDIO
+    state.progress_pct = 85
+    state.error_message = None
+    state.audio_segments = None
+    state.final_podcast_url = None
+    state.duration_seconds = None
+    state.updated_at = datetime.utcnow()
+    await repo.save_state(state)
+
+    background_tasks.add_task(_retry_audio_workflow, job_id)
+
+    return StatusResponse(
+        job_id=state.id,
+        status=state.status,
+        current_step=state.current_step,
+        progress_pct=state.progress_pct,
+        script_version=state.script_version,
+        source_title=state.source_title,
+        final_podcast_url=state.final_podcast_url,
+        duration_seconds=state.duration_seconds,
+        error_message=state.error_message,
     )
 
 
@@ -292,6 +374,56 @@ async def _resume_from_director(job_id: str) -> None:
         if state:
             state.status = JobStatus.FAILED
             state.error_message = str(e)
+            state.updated_at = datetime.utcnow()
+            await repo.save_state(state)
+
+
+async def _retry_audio_workflow(job_id: str) -> None:
+    """Background task to rerun only TTS synthesis/stitch/upload for an existing job."""
+    repo = get_repository()
+
+    try:
+        state = await repo.load_state(job_id)
+        if not state or not state.script or not state.script.strip():
+            return
+
+        result = await synthesize_podcast_audio(state.script, job_id)
+        state.audio_segments = [
+            AudioSegment(
+                speaker=segment.speaker,
+                text=segment.text,
+                audio_url=segment.audio_url,
+            )
+            for segment in result.segments
+        ]
+        state.duration_seconds = result.duration_seconds
+
+        if result.final_url:
+            state.final_podcast_url = result.final_url
+            state.status = JobStatus.COMPLETED
+            state.current_step = CurrentStep.COMPLETED
+            state.progress_pct = 100
+            state.error_message = None
+        else:
+            state.final_podcast_url = None
+            state.status = JobStatus.FAILED
+            state.current_step = CurrentStep.AUDIO
+            state.progress_pct = 85
+            state.error_message = (
+                "Audio generation failed: no playable audio file URL was created. "
+                "Check TTS and storage configuration."
+            )
+
+        state.updated_at = datetime.utcnow()
+        await repo.save_state(state)
+
+    except Exception as e:
+        state = await repo.load_state(job_id)
+        if state:
+            state.status = JobStatus.FAILED
+            state.current_step = CurrentStep.AUDIO
+            state.progress_pct = 85
+            state.error_message = f"Audio synthesis failed: {str(e)}"
             state.updated_at = datetime.utcnow()
             await repo.save_state(state)
 

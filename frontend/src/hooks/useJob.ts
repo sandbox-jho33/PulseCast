@@ -1,6 +1,12 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { StatusResponse, ScriptResponse, StoredJob } from '../types/podcast';
-import { generatePodcast, getJobStatus, getScript, editScript as apiEditScript } from '../api/podcast';
+import {
+  generatePodcast,
+  getJobStatus,
+  getScript,
+  editScript as apiEditScript,
+  retryAudioSynthesis,
+} from '../api/podcast';
 
 const STORAGE_KEY = 'pulsecast_jobs';
 
@@ -17,15 +23,27 @@ function saveStoredJobs(jobs: StoredJob[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs.slice(0, 10)));
 }
 
+function isAudioRetryable(status: StatusResponse | null): boolean {
+  if (!status) return false;
+  const hasPlayableAudioUrl = !!status.final_podcast_url && !status.final_podcast_url.startsWith('file://');
+
+  const failedAtAudio = status.status === 'FAILED' && status.current_step === 'AUDIO';
+  const completedWithoutAudio = status.status === 'COMPLETED' && !hasPlayableAudioUrl;
+
+  return failedAtAudio || completedWithoutAudio;
+}
+
 export function useJob() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [script, setScript] = useState<ScriptResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRetryingAudio, setIsRetryingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recentJobs, setRecentJobs] = useState<StoredJob[]>(loadStoredJobs);
 
   const isPolling = status?.status === 'RUNNING' || status?.status === 'PENDING';
+  const canRetryAudio = isAudioRetryable(status);
 
   const addToRecentJobs = useCallback((job: StoredJob) => {
     setRecentJobs(prev => {
@@ -142,10 +160,27 @@ export function useJob() {
     }
   }, [jobId]);
 
+  const retryAudio = useCallback(async () => {
+    if (!jobId || !canRetryAudio) return;
+
+    setIsRetryingAudio(true);
+    setError(null);
+
+    try {
+      const statusResponse = await retryAudioSynthesis(jobId);
+      setStatus(statusResponse);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to retry synthesis');
+    } finally {
+      setIsRetryingAudio(false);
+    }
+  }, [jobId, canRetryAudio]);
+
   const clearJob = useCallback(() => {
     setJobId(null);
     setStatus(null);
     setScript(null);
+    setIsRetryingAudio(false);
     setError(null);
     window.history.replaceState(null, '', window.location.pathname);
   }, []);
@@ -163,13 +198,16 @@ export function useJob() {
     status,
     script,
     isLoading,
+    isRetryingAudio,
     error,
     isPolling,
+    canRetryAudio,
     recentJobs,
     startGeneration,
     loadJob,
     pollStatus,
     editScript,
+    retryAudio,
     clearJob,
     setError,
   };

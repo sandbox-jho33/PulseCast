@@ -17,6 +17,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTS_URL = os.getenv("TTS_SERVICE_URL", "http://localhost:5002")
+FALLBACK_TTS_URLS = (
+    "http://localhost:5002",
+    "http://host.docker.internal:5002",
+    "http://tts:5002",
+)
 
 
 @dataclass
@@ -43,9 +48,19 @@ class TTSClient:
     """
 
     def __init__(self, base_url: str = DEFAULT_TTS_URL, timeout: float = 300.0):
-        self.base_url = base_url.rstrip("/")
+        self.base_urls = self._build_base_urls(base_url)
+        self.base_url = self.base_urls[0]
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
+
+    @staticmethod
+    def _build_base_urls(base_url: str) -> list[str]:
+        urls: list[str] = []
+        for candidate in (base_url, *FALLBACK_TTS_URLS):
+            normalized = candidate.rstrip("/")
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+        return urls
 
     async def __aenter__(self) -> "TTSClient":
         self._client = httpx.AsyncClient(timeout=self.timeout)
@@ -63,19 +78,48 @@ class TTSClient:
             )
         return self._client
 
+    async def _request_with_fallback(
+        self,
+        method: str,
+        path: str,
+        **kwargs,
+    ) -> httpx.Response:
+        client = self._get_client()
+        last_error: Exception | None = None
+
+        for base_url in self.base_urls:
+            url = f"{base_url}{path}"
+            try:
+                response = await client.request(method, url, **kwargs)
+                response.raise_for_status()
+                if self.base_url != base_url:
+                    logger.info(f"TTS endpoint fallback succeeded: {base_url}")
+                    self.base_url = base_url
+                return response
+            except httpx.HTTPStatusError as e:
+                # Service is reachable; status/content should be surfaced directly.
+                logger.error(
+                    f"TTS request to {base_url}{path} returned {e.response.status_code}: {e.response.text}"
+                )
+                raise
+            except Exception as e:
+                last_error = e
+                logger.warning(f"TTS request failed at {base_url}{path}: {e}")
+                continue
+
+        raise RuntimeError(
+            f"Failed to reach TTS service at any configured endpoint: {self.base_urls}"
+        ) from last_error
+
     async def health_check(self) -> TTSServiceHealth:
         """Check the health of the TTS service."""
-        client = self._get_client()
-        response = await client.get(f"{self.base_url}/health")
-        response.raise_for_status()
+        response = await self._request_with_fallback("GET", "/health")
         data = response.json()
         return TTSServiceHealth(**data)
 
     async def get_speakers(self) -> TTSSpeakerInfo:
         """Get available speakers from the TTS service."""
-        client = self._get_client()
-        response = await client.get(f"{self.base_url}/speakers")
-        response.raise_for_status()
+        response = await self._request_with_fallback("GET", "/speakers")
         data = response.json()
         return TTSSpeakerInfo(**data)
 
@@ -98,8 +142,6 @@ class TTSClient:
         Returns:
             Raw WAV audio bytes
         """
-        client = self._get_client()
-
         payload = {
             "text": text,
             "language": language,
@@ -114,11 +156,11 @@ class TTSClient:
             f"Synthesizing text (len={len(text)}) with role={speaker_role or speaker}"
         )
 
-        response = await client.post(
-            f"{self.base_url}/synthesize",
+        response = await self._request_with_fallback(
+            "POST",
+            "/synthesize",
             json=payload,
         )
-        response.raise_for_status()
 
         synthesis_time = response.headers.get("X-Synthesis-Time", "unknown")
         used_speaker = response.headers.get("X-Speaker", "unknown")
@@ -141,8 +183,6 @@ class TTSClient:
         Returns:
             List of dicts with: index, speaker, audio_base64, status (and error if failed)
         """
-        client = self._get_client()
-
         payload = []
         for seg in segments:
             item = {"text": seg["text"], "language": seg.get("language", "en")}
@@ -152,11 +192,11 @@ class TTSClient:
                 item["speaker"] = seg["speaker"]
             payload.append(item)
 
-        response = await client.post(
-            f"{self.base_url}/synthesize/batch",
+        response = await self._request_with_fallback(
+            "POST",
+            "/synthesize/batch",
             json=payload,
         )
-        response.raise_for_status()
 
         return response.json()
 
@@ -179,6 +219,6 @@ async def get_tts_client() -> TTSClient:
 async def close_tts_client() -> None:
     """Close the singleton TTS client."""
     global _tts_client
-    if _tts_client:
+    if _tts_client and _tts_client._client:
         await _tts_client._client.aclose()
         _tts_client = None

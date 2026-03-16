@@ -33,6 +33,13 @@ export async function getJobStatus(job_id: string): Promise<StatusResponse> {
   return handleResponse<StatusResponse>(response);
 }
 
+export async function retryAudioSynthesis(job_id: string): Promise<StatusResponse> {
+  const response = await fetch(`${API_BASE}/${job_id}/retry-audio`, {
+    method: 'POST',
+  });
+  return handleResponse<StatusResponse>(response);
+}
+
 export async function getScript(job_id: string): Promise<ScriptResponse> {
   const response = await fetch(`${API_BASE}/${job_id}/script`);
   return handleResponse<ScriptResponse>(response);
