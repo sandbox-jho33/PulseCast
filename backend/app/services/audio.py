@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+_LOCAL_AUDIO_DIR = "pulsecast"
 
 
 @dataclass
@@ -50,16 +51,16 @@ def parse_script_to_segments(script: str) -> List[AudioSegment]:
         if not line:
             continue
 
-        pause_match = re.match(r"\[pause:\s*(\d+)ms\]", line)
+        pause_match = re.match(r"\[pause:\s*(\d+)ms\]", line, re.IGNORECASE)
         if pause_match:
             segments.append(
                 AudioSegment(speaker="PAUSE", text=f"[{pause_match.group(1)}ms]")
             )
             continue
 
-        speaker_match = re.match(r"(LEO|SARAH):\s*(.+)", line)
+        speaker_match = re.match(r"(LEO|SARAH)\s*:\s*(.+)", line, re.IGNORECASE)
         if speaker_match:
-            speaker = speaker_match.group(1)
+            speaker = speaker_match.group(1).upper()
             text = speaker_match.group(2).strip()
             segments.append(AudioSegment(speaker=speaker, text=text))
 
@@ -189,7 +190,26 @@ def stitch_audio_with_pydub(
     return buffer.read()
 
 
-def save_audio_locally(audio_bytes: bytes, job_id: str) -> str:
+def get_local_audio_path(job_id: str, extension: str = "mp3") -> str:
+    """Return canonical local audio path for a job."""
+    output_dir = os.path.join(tempfile.gettempdir(), _LOCAL_AUDIO_DIR)
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, f"{job_id}.{extension}")
+
+
+def get_local_audio_url(job_id: str, extension: str = "mp3") -> str:
+    """Return browser-playable API URL for a locally saved audio file."""
+    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip(
+        "/"
+    )
+    return f"{backend_public_url}/api/v1/podcast/local-audio/{job_id}.{extension}"
+
+
+def save_audio_locally(
+    audio_bytes: bytes,
+    job_id: str,
+    extension: str = "mp3",
+) -> str:
     """
     Save audio to a local file for development.
 
@@ -200,10 +220,7 @@ def save_audio_locally(audio_bytes: bytes, job_id: str) -> str:
     Returns:
         Path to the saved file
     """
-    output_dir = os.path.join(tempfile.gettempdir(), "pulsecast")
-    os.makedirs(output_dir, exist_ok=True)
-
-    output_path = os.path.join(output_dir, f"{job_id}.mp3")
+    output_path = get_local_audio_path(job_id, extension)
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
 
@@ -234,6 +251,12 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
     speaking_segments = [s for s in segments if s.speaker != "PAUSE"]
 
     logger.info(f"Found {len(speaking_segments)} speaking segments")
+    if not speaking_segments:
+        logger.warning(
+            "No speaker-labeled segments parsed for job %s. "
+            "Expected lines like 'LEO: ...' or 'SARAH: ...'.",
+            job_id,
+        )
 
     for segment in speaking_segments:
         audio_bytes = await synthesize_segment(segment.text, segment.speaker)
@@ -268,8 +291,8 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
                 final_audio, file_path, "audio/mpeg"
             )
         else:
-            local_path = save_audio_locally(final_audio, job_id)
-            final_url = f"file://{local_path}"
+            save_audio_locally(final_audio, job_id, "mp3")
+            final_url = get_local_audio_url(job_id, "mp3")
 
         try:
             from pydub import AudioSegment as PydubAudioSegment
