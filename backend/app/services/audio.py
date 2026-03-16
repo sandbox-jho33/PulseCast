@@ -7,6 +7,7 @@ and audio stitching with pydub.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -17,6 +18,22 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 _LOCAL_AUDIO_DIR = "pulsecast"
+_STORAGE_UPLOAD_MAX_ATTEMPTS = 3
+_STORAGE_UPLOAD_RETRY_DELAY_SECONDS = 0.5
+
+_TRANSIENT_STORAGE_ERROR_MARKERS = (
+    "timeout",
+    "temporarily unavailable",
+    "connection",
+    "network",
+    "rate limit",
+    "too many requests",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+)
 
 
 @dataclass
@@ -46,25 +63,109 @@ def parse_script_to_segments(script: str) -> List[AudioSegment]:
     segments = []
     lines = script.strip().split("\n")
 
-    for line in lines:
-        line = line.strip()
+    for raw_line in lines:
+        line = raw_line.strip()
         if not line:
             continue
 
-        pause_match = re.match(r"\[pause:\s*(\d+)ms\]", line, re.IGNORECASE)
+        pause_match = re.match(r"^\[pause:\s*(\d+)\s*ms\]$", line, re.IGNORECASE)
         if pause_match:
             segments.append(
                 AudioSegment(speaker="PAUSE", text=f"[{pause_match.group(1)}ms]")
             )
             continue
 
-        speaker_match = re.match(r"(LEO|SARAH)\s*:\s*(.+)", line, re.IGNORECASE)
+        # Accept common LLM formatting variants:
+        # - lowercase speaker labels (leo:, sarah:)
+        # - markdown bullets ("- LEO: ...")
+        # - bold speaker labels ("**LEO:** ...")
+        speaker_match = re.match(
+            r"^(?:[-*]\s*)?(?:\*\*|__)?\s*(leo|sarah)\s*(?:\*\*|__)?\s*:\s*(.+)$",
+            line,
+            re.IGNORECASE,
+        )
         if speaker_match:
             speaker = speaker_match.group(1).upper()
             text = speaker_match.group(2).strip()
+            text = re.sub(r"^(?:\*\*|__)\s*", "", text).strip()
+            text = re.sub(r"(?:\*\*|__)\s*$", "", text).strip()
+            if not text:
+                continue
             segments.append(AudioSegment(speaker=speaker, text=text))
 
+    has_speaking_segments = any(s.speaker in {"LEO", "SARAH"} for s in segments)
+    if has_speaking_segments:
+        return segments
+
+    # Last-resort fallback: if script has content but no parseable speaker labels,
+    # synthesize with Leo so audio generation does not fail silently.
+    cleaned_lines: List[str] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^\[pause:\s*(\d+)\s*ms\]$", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^(?:[-*]\s*)?(?:\*\*|__)?\s*", "", line)
+        line = re.sub(r"(?:\*\*|__)?\s*$", "", line)
+        cleaned_lines.append(line)
+
+    fallback_text = " ".join(cleaned_lines).strip()
+    if not fallback_text:
+        return segments
+
+    logger.warning(
+        "No explicit speaker labels found in script; using fallback Leo narration chunks."
+    )
+    for chunk in _chunk_text_for_tts(fallback_text):
+        segments.append(AudioSegment(speaker="LEO", text=chunk))
+
     return segments
+
+
+def _chunk_text_for_tts(text: str, max_chars: int = 350) -> List[str]:
+    """Split text into sentence-like chunks suitable for TTS requests."""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        candidate_len = current_len + (1 if current else 0) + len(sentence)
+        if candidate_len <= max_chars:
+            current.append(sentence)
+            current_len = candidate_len
+            continue
+
+        if current:
+            chunks.append(" ".join(current).strip())
+        if len(sentence) <= max_chars:
+            current = [sentence]
+            current_len = len(sentence)
+            continue
+
+        # Handle very long single sentences by word chunking.
+        words = sentence.split()
+        current = []
+        current_len = 0
+        for word in words:
+            word_candidate_len = current_len + (1 if current else 0) + len(word)
+            if word_candidate_len > max_chars and current:
+                chunks.append(" ".join(current).strip())
+                current = [word]
+                current_len = len(word)
+            else:
+                current.append(word)
+                current_len = word_candidate_len
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    return chunks
 
 
 async def upload_audio_to_storage(
@@ -85,6 +186,17 @@ async def upload_audio_to_storage(
     """
     if not os.getenv("SUPABASE_URL"):
         return None
+    if not (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+    ):
+        logger.warning(
+            "SUPABASE_URL is set, but no Supabase key is configured. "
+            "Set SUPABASE_SERVICE_ROLE_KEY (preferred), SUPABASE_SERVICE_KEY, "
+            "or SUPABASE_ANON_KEY."
+        )
+        return None
 
     try:
         from ..storage.supabase_client import (
@@ -95,18 +207,45 @@ async def upload_audio_to_storage(
         client = get_supabase_client()
         bucket = get_storage_bucket_name()
 
-        client.storage.from_(bucket).upload(
-            file_path,
-            audio_data,
-            {"content-type": content_type},
-        )
+        for attempt in range(1, _STORAGE_UPLOAD_MAX_ATTEMPTS + 1):
+            try:
+                client.storage.from_(bucket).upload(
+                    file_path,
+                    audio_data,
+                    {
+                        "content-type": content_type,
+                        "upsert": "true",
+                    },
+                )
 
-        public_url = client.storage.from_(bucket).get_public_url(file_path)
-        return public_url
+                public_url = client.storage.from_(bucket).get_public_url(file_path)
+                return public_url
+            except Exception as e:
+                message = str(e).lower()
+                is_transient = any(
+                    marker in message for marker in _TRANSIENT_STORAGE_ERROR_MARKERS
+                )
+                should_retry = (
+                    is_transient and attempt < _STORAGE_UPLOAD_MAX_ATTEMPTS
+                )
+                logger.warning(
+                    "Storage upload attempt %s/%s failed for %s: %s",
+                    attempt,
+                    _STORAGE_UPLOAD_MAX_ATTEMPTS,
+                    file_path,
+                    e,
+                )
+                if should_retry:
+                    await asyncio.sleep(
+                        _STORAGE_UPLOAD_RETRY_DELAY_SECONDS * attempt
+                    )
+                    continue
+                break
 
     except Exception as e:
         logger.error(f"Failed to upload audio to storage: {e}")
-        return None
+
+    return None
 
 
 async def synthesize_segment(
@@ -260,9 +399,11 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
     logger.info(f"Found {len(speaking_segments)} speaking segments")
     if not speaking_segments:
         logger.warning(
-            "No speaker-labeled segments parsed for job %s. "
-            "Expected lines like 'LEO: ...' or 'SARAH: ...'.",
+            "No parseable speaker lines found in script for job %s. "
+            "Expected lines like 'LEO: ...' or 'SARAH: ...'. "
+            "Script preview: %r",
             job_id,
+            "\n".join(script.splitlines()[:8]),
         )
 
     for segment in speaking_segments:
@@ -299,9 +440,15 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
             final_url = await upload_audio_to_storage(
                 final_audio, file_path, content_type
             )
-        else:
-            save_audio_locally(final_audio, job_id, "mp3")
-            final_url = get_local_audio_url(job_id, "mp3")
+            if not final_url:
+                logger.warning(
+                    "Storage upload failed for job %s, falling back to local audio file",
+                    job_id,
+                )
+
+        if not final_url:
+            save_audio_locally(final_audio, job_id, final_format)
+            final_url = get_local_audio_url(job_id, final_format)
 
         try:
             from pydub import AudioSegment as PydubAudioSegment

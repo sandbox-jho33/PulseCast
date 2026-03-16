@@ -41,6 +41,8 @@ Set these in your `.env` file:
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=eyJ...  # From Project Settings > API > anon public
-SUPABASE_SERVICE_KEY=eyJ...  # From Project Settings > API > service_role
+SUPABASE_SERVICE_ROLE_KEY=eyJ...  # From Project Settings > API > service_role
+# Optional backward-compatible alias:
+SUPABASE_SERVICE_KEY=eyJ...
 SUPABASE_STORAGE_BUCKET=podcast-audio
 ```
