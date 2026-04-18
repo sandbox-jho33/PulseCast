@@ -38,8 +38,12 @@ export interface PodcastState {
   error_message?: string;
 }
 
+export type LLMProvider = 'ollama' | 'openai' | 'anthropic';
+
 export interface GenerateRequest {
   source_url: string;
+  llm_provider?: LLMProvider;
+  llm_api_key?: string;
 }
 
 export interface GenerateResponse {

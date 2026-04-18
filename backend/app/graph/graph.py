@@ -50,11 +50,16 @@ class GraphState(TypedDict):
     audio_segments: list[dict]
     final_podcast_url: str
     duration_seconds: float
+    llm_provider: str
+    llm_api_key: str
 
 
-def _get_llm():
+def _get_llm(provider: str = "", api_key: str = ""):
     """Get the LLM client from the factory."""
-    return get_llm()
+    return get_llm(
+        provider=provider or None,
+        api_key=api_key or None,
+    )
 
 
 def _state_to_graph(state: PodcastState) -> GraphState:
@@ -83,6 +88,8 @@ def _state_to_graph(state: PodcastState) -> GraphState:
         audio_segments=[],
         final_podcast_url=state.final_podcast_url or "",
         duration_seconds=state.duration_seconds or 0.0,
+        llm_provider=state.llm_provider or "",
+        llm_api_key=state.llm_api_key or "",
     )
 
 
@@ -118,6 +125,8 @@ def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> Podcas
         audio_segments=audio_segments,
         final_podcast_url=graph_state.get("final_podcast_url") or None,
         duration_seconds=graph_state.get("duration_seconds") or None,
+        llm_provider=base_state.llm_provider,
+        llm_api_key=base_state.llm_api_key,
     )
 
 
@@ -492,7 +501,7 @@ async def researcher_node(state: GraphState) -> Dict[str, Any]:
 
     Reads source_markdown and produces a beat-sheet of key points.
     """
-    llm = _get_llm()
+    llm = _get_llm(state.get("llm_provider", ""), state.get("llm_api_key", ""))
 
     messages = [
         SystemMessage(content=RESEARCHER_SYSTEM),
@@ -517,7 +526,7 @@ async def leo_node(state: GraphState) -> Dict[str, Any]:
     """
     Draft engaging script content as Leo (visionary host).
     """
-    llm = _get_llm()
+    llm = _get_llm(state.get("llm_provider", ""), state.get("llm_api_key", ""))
 
     existing_script = state.get("script", "")
     knowledge_points_list = state.get("knowledge_points_list", [])
@@ -597,7 +606,7 @@ async def sarah_node(state: GraphState) -> Dict[str, Any]:
     """
     Add Sarah's responses to the script.
     """
-    llm = _get_llm()
+    llm = _get_llm(state.get("llm_provider", ""), state.get("llm_api_key", ""))
 
     existing_script = state.get("script", "")
     knowledge_points_list = state.get("knowledge_points_list", [])
@@ -668,7 +677,7 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
     Review the script and decide APPROVE or CONTINUE.
     Coverage-first approach with 1000-word minimum floor.
     """
-    llm = _get_llm()
+    llm = _get_llm(state.get("llm_provider", ""), state.get("llm_api_key", ""))
 
     script = state["script"]
     knowledge_points_list = state.get("knowledge_points_list", [])

@@ -3,7 +3,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { useJob } from '../hooks/useJob';
 import { usePolling } from '../hooks/usePolling';
+import { useLLMSettings } from '../hooks/useLLMSettings';
 import { UrlInput } from '../components/UrlInput';
+import { LLMSettings } from '../components/LLMSettings';
 import { ProgressTimeline } from '../components/ProgressTimeline';
 import { ScriptViewer } from '../components/ScriptViewer';
 import { ScriptEditor } from '../components/ScriptEditor';
@@ -98,14 +100,21 @@ export function GeneratePage() {
     setError,
   } = useJob();
 
+  const { provider, savedApiKey, setProvider, saveApiKey, clearApiKey } = useLLMSettings();
+  const [keyError, setKeyError] = useState<string | undefined>();
   const [isEditing, setIsEditing] = useState(false);
 
   usePolling(pollStatus, 2000, isPolling);
 
   const handleSubmit = useCallback((url: string) => {
+    if (provider !== 'ollama' && !savedApiKey) {
+      setKeyError('Save an API key before generating.');
+      return;
+    }
+    setKeyError(undefined);
     setIsEditing(false);
-    startGeneration(url);
-  }, [startGeneration]);
+    startGeneration(url, provider, savedApiKey || undefined);
+  }, [startGeneration, provider, savedApiKey]);
 
   const handleEdit = useCallback(() => {
     setIsEditing(true);
@@ -153,11 +162,20 @@ export function GeneratePage() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
+          className="space-y-6"
         >
           <UrlInput
             onSubmit={handleSubmit}
             isLoading={isLoading}
             disabled={isPolling}
+          />
+          <LLMSettings
+            provider={provider}
+            savedApiKey={savedApiKey}
+            onProviderChange={setProvider}
+            onSaveApiKey={saveApiKey}
+            onClearApiKey={clearApiKey}
+            keyError={keyError}
           />
         </motion.div>
 

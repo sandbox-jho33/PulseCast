@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { StatusResponse, ScriptResponse, StoredJob } from '../types/podcast';
+import type { LLMProvider, StatusResponse, ScriptResponse, StoredJob } from '../types/podcast';
 import {
   generatePodcast,
   getJobStatus,
@@ -54,13 +54,17 @@ export function useJob() {
     });
   }, []);
 
-  const startGeneration = useCallback(async (sourceUrl: string) => {
+  const startGeneration = useCallback(async (
+    sourceUrl: string,
+    llmProvider?: LLMProvider,
+    llmApiKey?: string,
+  ) => {
     setIsLoading(true);
     setError(null);
     setScript(null);
-    
+
     try {
-      const response = await generatePodcast(sourceUrl);
+      const response = await generatePodcast(sourceUrl, llmProvider, llmApiKey);
       setJobId(response.job_id);
       setStatus({
         job_id: response.job_id,

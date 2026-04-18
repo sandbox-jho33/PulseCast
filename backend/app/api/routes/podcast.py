@@ -106,7 +106,12 @@ async def generate_podcast(
     """
     job_id = str(uuid.uuid4())
 
-    state = new_state(job_id, request.source_url)
+    state = new_state(
+        job_id,
+        request.source_url,
+        llm_provider=request.llm_provider,
+        llm_api_key=request.llm_api_key,
+    )
 
     repo = get_repository()
     await repo.save_state(state)
