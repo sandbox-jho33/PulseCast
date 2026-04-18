@@ -57,14 +57,13 @@ export function useJob() {
   const startGeneration = useCallback(async (
     sourceUrl: string,
     llmProvider?: LLMProvider,
-    llmApiKey?: string,
   ) => {
     setIsLoading(true);
     setError(null);
     setScript(null);
 
     try {
-      const response = await generatePodcast(sourceUrl, llmProvider, llmApiKey);
+      const response = await generatePodcast(sourceUrl, llmProvider);
       setJobId(response.job_id);
       setStatus({
         job_id: response.job_id,

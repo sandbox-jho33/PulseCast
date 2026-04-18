@@ -23,11 +23,9 @@ async function handleResponse<T>(response: Response): Promise<T> {
 export async function generatePodcast(
   source_url: string,
   llm_provider?: LLMProvider,
-  llm_api_key?: string
 ): Promise<GenerateResponse> {
   const body: GenerateRequest = { source_url };
   if (llm_provider) body.llm_provider = llm_provider;
-  if (llm_api_key) body.llm_api_key = llm_api_key;
   const response = await fetch(`${API_BASE}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

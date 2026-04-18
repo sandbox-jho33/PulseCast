@@ -2,47 +2,42 @@
 LLM factory module for PulseCast.
 
 Provides a unified interface for LLM providers (Ollama, OpenAI, Anthropic).
-Ollama is the primary provider for local, free inference.
+Provider is selected per-request by the frontend; credentials are read from
+environment variables only.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Literal, Optional
+from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
-LLMProvider = Literal["ollama", "openai", "anthropic"]
 
-
-def get_llm(provider: Optional[str] = None, api_key: Optional[str] = None) -> BaseChatModel:
+def get_llm(provider: Optional[str] = None) -> BaseChatModel:
     """
-    Get the LLM client based on provider and optional api_key.
+    Get the LLM client for the given provider.
 
     Args:
         provider: "ollama", "openai", or "anthropic". Falls back to LLM_PROVIDER env var.
-        api_key: User-supplied API key. Falls back to env var for cloud providers.
 
     Environment variables:
-        LLM_PROVIDER: "ollama" (default), "openai", or "anthropic"
-        OLLAMA_MODEL: Model name for Ollama (default: llama3.2:3b)
-        OLLAMA_BASE_URL: Ollama server URL (default: http://host.docker.internal:11434)
-        OPENAI_API_KEY: Used when LLM_PROVIDER=openai and no key passed
-        OPENAI_MODEL: Model for OpenAI (default: gpt-4o-mini)
-        ANTHROPIC_API_KEY: Used when LLM_PROVIDER=anthropic and no key passed
-        ANTHROPIC_MODEL: Model for Anthropic (default: claude-3-5-haiku-20241022)
+        LLM_PROVIDER: default provider if none is supplied
+        OLLAMA_MODEL, OLLAMA_BASE_URL: Ollama settings
+        OPENAI_API_KEY, OPENAI_MODEL: required when provider=openai
+        ANTHROPIC_API_KEY, ANTHROPIC_MODEL: required when provider=anthropic
     """
-    resolved_provider: str = (provider or os.getenv("LLM_PROVIDER", "ollama")).lower()
+    resolved = (provider or os.getenv("LLM_PROVIDER", "ollama")).lower()
 
-    if resolved_provider == "ollama":
+    if resolved == "ollama":
         return _get_ollama_llm()
-    elif resolved_provider == "openai":
-        return _get_openai_llm(api_key)
-    elif resolved_provider == "anthropic":
-        return _get_anthropic_llm(api_key)
+    elif resolved == "openai":
+        return _get_openai_llm()
+    elif resolved == "anthropic":
+        return _get_anthropic_llm()
     else:
         raise ValueError(
-            f"Unknown LLM provider: {resolved_provider!r}. Use 'ollama', 'openai', or 'anthropic'."
+            f"Unknown LLM provider: {resolved!r}. Use 'ollama', 'openai', or 'anthropic'."
         )
 
 
@@ -63,31 +58,35 @@ def _get_ollama_llm() -> BaseChatModel:
     )
 
 
-def _get_openai_llm(api_key: Optional[str] = None) -> BaseChatModel:
+def _get_openai_llm() -> BaseChatModel:
     """Get OpenAI LLM client."""
     from langchain_openai import ChatOpenAI
 
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-    resolved_key = api_key or os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY env var is required when provider=openai")
 
     return ChatOpenAI(
         model=model,
         temperature=temperature,
-        api_key=resolved_key,
+        api_key=api_key,
     )
 
 
-def _get_anthropic_llm(api_key: Optional[str] = None) -> BaseChatModel:
+def _get_anthropic_llm() -> BaseChatModel:
     """Get Anthropic LLM client."""
     from langchain_anthropic import ChatAnthropic
 
     model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
     temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-    resolved_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY env var is required when provider=anthropic")
 
     return ChatAnthropic(
         model=model,
         temperature=temperature,
-        api_key=resolved_key,
+        api_key=api_key,
     )

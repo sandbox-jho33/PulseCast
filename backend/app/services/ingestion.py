@@ -6,15 +6,24 @@ Fetches content from URLs and extracts clean markdown.
 
 from __future__ import annotations
 
+import logging
 import re
-import ssl
 from dataclasses import dataclass
 
 import httpx
 from bs4 import BeautifulSoup
 
-# Use system certificates for SSL
-_ssl_context = ssl.create_default_context(cafile="/usr/lib/ssl/cert.pem")
+logger = logging.getLogger(__name__)
+
+# Send a real-browser User-Agent; many sites 403 the default httpx UA.
+_DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 @dataclass
@@ -36,16 +45,20 @@ async def ingest_source(source_url: str) -> IngestionResult:
     Raises:
         httpx.HTTPError: If the URL cannot be fetched.
     """
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=30.0,
-        verify=_ssl_context,
-    ) as client:
-        response = await client.get(source_url)
-        response.raise_for_status()
-        html = response.text
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+            headers=_DEFAULT_HEADERS,
+        ) as client:
+            response = await client.get(source_url)
+            response.raise_for_status()
+            html = response.text
+    except httpx.HTTPError as e:
+        logger.exception("Failed to fetch source URL %s", source_url)
+        raise RuntimeError(f"Failed to fetch {source_url}: {e}") from e
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = _parse_html(html)
 
     title = _extract_title(soup)
     content = _extract_main_content(soup)
@@ -53,7 +66,22 @@ async def ingest_source(source_url: str) -> IngestionResult:
 
     markdown = _clean_markdown(markdown)
 
+    if not markdown:
+        raise RuntimeError(
+            f"Ingestion produced empty content from {source_url}; "
+            "the page may be JS-rendered or blocked by anti-bot protection."
+        )
+
     return IngestionResult(title=title, markdown=markdown)
+
+
+def _parse_html(html: str) -> BeautifulSoup:
+    """Parse HTML, falling back to the stdlib parser if lxml is unavailable."""
+    try:
+        return BeautifulSoup(html, "lxml")
+    except Exception:
+        logger.warning("lxml parser unavailable; falling back to html.parser")
+        return BeautifulSoup(html, "html.parser")
 
 
 def _extract_title(soup: BeautifulSoup) -> str:
@@ -96,7 +124,7 @@ def _extract_main_content(soup: BeautifulSoup) -> str:
 
 def _html_to_markdown(html: str) -> str:
     """Convert HTML to simple markdown."""
-    soup = BeautifulSoup(html, "lxml")
+    soup = _parse_html(html)
 
     for tag in soup.find_all(["script", "style", "nav", "footer", "aside"]):
         tag.decompose()

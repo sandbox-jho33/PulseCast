@@ -236,6 +236,7 @@ class SupabasePodcastStateRepository:
             "director_decision": state.director_decision.value
             if state.director_decision
             else None,
+            "llm_provider": state.llm_provider,
             "created_at": state.created_at.isoformat() if state.created_at else None,
             "updated_at": state.updated_at.isoformat() if state.updated_at else None,
         }
@@ -261,6 +262,7 @@ class SupabasePodcastStateRepository:
             director_decision=DirectorDecision(row["director_decision"])
             if row.get("director_decision")
             else None,
+            llm_provider=row.get("llm_provider"),
             created_at=datetime.fromisoformat(row["created_at"])
             if row.get("created_at")
             else datetime.utcnow(),

@@ -13,12 +13,15 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
 from fastapi.responses import FileResponse
+
+logger = logging.getLogger(__name__)
 
 from ...graph.graph import get_graph_runner
 from ...models.state import (
@@ -86,6 +89,7 @@ async def _run_podcast_workflow(job_id: str) -> None:
         await repo.save_state(state)
 
     except Exception as e:
+        logger.exception("Podcast workflow failed for job %s", job_id)
         state = await repo.load_state(job_id)
         if state:
             state.status = JobStatus.FAILED
@@ -110,7 +114,6 @@ async def generate_podcast(
         job_id,
         request.source_url,
         llm_provider=request.llm_provider,
-        llm_api_key=request.llm_api_key,
     )
 
     repo = get_repository()

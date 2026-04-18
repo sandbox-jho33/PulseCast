@@ -3,10 +3,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { useJob } from '../hooks/useJob';
 import { usePolling } from '../hooks/usePolling';
-import { useLLMSettings } from '../hooks/useLLMSettings';
 import { UrlInput } from '../components/UrlInput';
-import { LLMSettings } from '../components/LLMSettings';
+import { LLMProviderSelect } from '../components/LLMProviderSelect';
 import { ProgressTimeline } from '../components/ProgressTimeline';
+import type { LLMProvider } from '../types/podcast';
 import { ScriptViewer } from '../components/ScriptViewer';
 import { ScriptEditor } from '../components/ScriptEditor';
 import { AudioPlayer } from '../components/AudioPlayer';
@@ -100,21 +100,22 @@ export function GeneratePage() {
     setError,
   } = useJob();
 
-  const { provider, savedApiKey, setProvider, saveApiKey, clearApiKey } = useLLMSettings();
-  const [keyError, setKeyError] = useState<string | undefined>();
   const [isEditing, setIsEditing] = useState(false);
+  const [provider, setProviderState] = useState<LLMProvider>(
+    () => (localStorage.getItem('llm_provider') as LLMProvider) || 'ollama'
+  );
+
+  const setProvider = useCallback((p: LLMProvider) => {
+    setProviderState(p);
+    localStorage.setItem('llm_provider', p);
+  }, []);
 
   usePolling(pollStatus, 2000, isPolling);
 
   const handleSubmit = useCallback((url: string) => {
-    if (provider !== 'ollama' && !savedApiKey) {
-      setKeyError('Save an API key before generating.');
-      return;
-    }
-    setKeyError(undefined);
     setIsEditing(false);
-    startGeneration(url, provider, savedApiKey || undefined);
-  }, [startGeneration, provider, savedApiKey]);
+    startGeneration(url, provider);
+  }, [startGeneration, provider]);
 
   const handleEdit = useCallback(() => {
     setIsEditing(true);
@@ -169,13 +170,10 @@ export function GeneratePage() {
             isLoading={isLoading}
             disabled={isPolling}
           />
-          <LLMSettings
+          <LLMProviderSelect
             provider={provider}
-            savedApiKey={savedApiKey}
-            onProviderChange={setProvider}
-            onSaveApiKey={saveApiKey}
-            onClearApiKey={clearApiKey}
-            keyError={keyError}
+            onChange={setProvider}
+            disabled={isPolling}
           />
         </motion.div>
 

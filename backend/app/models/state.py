@@ -100,10 +100,7 @@ class PodcastState(BaseModel):
     )
 
     llm_provider: Optional[str] = Field(
-        default=None, description="LLM provider override: 'ollama', 'openai', or 'anthropic'."
-    )
-    llm_api_key: Optional[str] = Field(
-        default=None, description="User-supplied API key for cloud LLM providers."
+        default=None, description="LLM provider: 'ollama', 'openai', or 'anthropic'."
     )
 
 
@@ -130,9 +127,6 @@ class GenerateRequest(BaseModel):
     )
     llm_provider: Optional[str] = Field(
         default=None, description="LLM provider: 'ollama', 'openai', or 'anthropic'."
-    )
-    llm_api_key: Optional[str] = Field(
-        default=None, description="User-supplied API key for cloud LLM providers."
     )
 
 
@@ -191,7 +185,6 @@ def new_state(
     job_id: str,
     source_url: str,
     llm_provider: Optional[str] = None,
-    llm_api_key: Optional[str] = None,
 ) -> PodcastState:
     """Create a new PodcastState with default values."""
     return PodcastState(
@@ -201,7 +194,6 @@ def new_state(
         current_step=CurrentStep.INGESTING,
         progress_pct=0,
         llm_provider=llm_provider,
-        llm_api_key=llm_api_key,
     )
 
 
