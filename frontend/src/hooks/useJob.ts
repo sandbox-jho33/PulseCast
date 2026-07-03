@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import type { LLMProvider, StatusResponse, ScriptResponse, StoredJob } from '../types/podcast';
 import {
   generatePodcast,
@@ -6,6 +7,7 @@ import {
   getScript,
   editScript as apiEditScript,
   retryAudioSynthesis,
+  setAuthTokenGetter,
 } from '../api/podcast';
 
 const STORAGE_KEY = 'pulsecast_jobs';
@@ -34,6 +36,7 @@ function isAudioRetryable(status: StatusResponse | null): boolean {
 }
 
 export function useJob() {
+  const { getToken } = useAuth();
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [script, setScript] = useState<ScriptResponse | null>(null);
@@ -53,6 +56,10 @@ export function useJob() {
       return updated;
     });
   }, []);
+
+  useEffect(() => {
+    setAuthTokenGetter(getToken);
+  }, [getToken]);
 
   const startGeneration = useCallback(async (
     sourceUrl: string,

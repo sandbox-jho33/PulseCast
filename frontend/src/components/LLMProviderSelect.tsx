@@ -7,9 +7,8 @@ interface LLMProviderSelectProps {
 }
 
 const PROVIDER_LABELS: Record<LLMProvider, string> = {
-  ollama: 'Local (Ollama)',
   openai: 'OpenAI',
-  anthropic: 'Anthropic',
+  anthropic: 'Claude',
 };
 
 export function LLMProviderSelect({ provider, onChange, disabled }: LLMProviderSelectProps) {
@@ -39,7 +38,7 @@ export function LLMProviderSelect({ provider, onChange, disabled }: LLMProviderS
         ))}
       </div>
       <p className="mt-2 text-xs text-muted/50">
-        API keys (if needed) are configured server-side.
+        Uses your encrypted BYOK credential.
       </p>
     </div>
   );

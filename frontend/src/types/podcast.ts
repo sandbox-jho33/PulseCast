@@ -38,11 +38,22 @@ export interface PodcastState {
   error_message?: string;
 }
 
-export type LLMProvider = 'ollama' | 'openai' | 'anthropic';
+export type LLMProvider = 'openai' | 'anthropic';
+export type CredentialProvider = LLMProvider | 'elevenlabs';
 
 export interface GenerateRequest {
   source_url: string;
   llm_provider?: LLMProvider;
+}
+
+export interface CredentialStatus {
+  provider: CredentialProvider;
+  configured: boolean;
+  updated_at?: string;
+}
+
+export interface CredentialStatusResponse {
+  credentials: CredentialStatus[];
 }
 
 export interface GenerateResponse {

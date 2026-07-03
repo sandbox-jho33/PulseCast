@@ -39,11 +39,13 @@ export function AudioPlayer({ audioUrl, durationSeconds }: AudioPlayerProps) {
   useEffect(() => {
     if (!containerRef.current || !audioUrl) return;
 
-    setIsLoading(true);
-    setIsReady(false);
-    setError(null);
-    setUseNativeFallback(false);
-    setCurrentTime(0);
+    const resetTimer = window.setTimeout(() => {
+      setIsLoading(true);
+      setIsReady(false);
+      setError(null);
+      setUseNativeFallback(false);
+      setCurrentTime(0);
+    }, 0);
 
     destroyedRef.current = false;
 
@@ -102,6 +104,7 @@ export function AudioPlayer({ audioUrl, durationSeconds }: AudioPlayerProps) {
     return () => {
       if (destroyedRef.current) return;
       destroyedRef.current = true;
+      window.clearTimeout(resetTimer);
       try {
         ws.destroy();
       } catch {

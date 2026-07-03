@@ -1,18 +1,21 @@
 import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router-dom';
+import { UserButton } from '@clerk/clerk-react';
 import { useJob } from '../hooks/useJob';
 import { usePolling } from '../hooks/usePolling';
 import { UrlInput } from '../components/UrlInput';
 import { LLMProviderSelect } from '../components/LLMProviderSelect';
 import { ProgressTimeline } from '../components/ProgressTimeline';
 import type { LLMProvider } from '../types/podcast';
+import type { CredentialStatus } from '../types/podcast';
 import { ScriptViewer } from '../components/ScriptViewer';
 import { ScriptEditor } from '../components/ScriptEditor';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { SourcePanel } from '../components/SourcePanel';
 import { ErrorState } from '../components/ErrorState';
 import { RecentJobs } from '../components/RecentJobs';
+import { CredentialSettings } from '../components/CredentialSettings';
 
 function Header() {
   return (
@@ -43,6 +46,7 @@ function Header() {
         >
           Library
         </Link>
+        <UserButton />
       </nav>
     </motion.header>
   );
@@ -102,8 +106,9 @@ export function GeneratePage() {
 
   const [isEditing, setIsEditing] = useState(false);
   const [provider, setProviderState] = useState<LLMProvider>(
-    () => (localStorage.getItem('llm_provider') as LLMProvider) || 'ollama'
+    () => (localStorage.getItem('llm_provider') as LLMProvider) || 'openai'
   );
+  const [credentials, setCredentials] = useState<CredentialStatus[]>([]);
 
   const setProvider = useCallback((p: LLMProvider) => {
     setProviderState(p);
@@ -113,9 +118,15 @@ export function GeneratePage() {
   usePolling(pollStatus, 2000, isPolling);
 
   const handleSubmit = useCallback((url: string) => {
+    const hasLlmKey = credentials.find((credential) => credential.provider === provider)?.configured;
+    const hasTtsKey = credentials.find((credential) => credential.provider === 'elevenlabs')?.configured;
+    if (!hasLlmKey || !hasTtsKey) {
+      setError('Configure your selected AI provider key and ElevenLabs key before generating.');
+      return;
+    }
     setIsEditing(false);
     startGeneration(url, provider);
-  }, [startGeneration, provider]);
+  }, [credentials, provider, setError, startGeneration]);
 
   const handleEdit = useCallback(() => {
     setIsEditing(true);
@@ -175,6 +186,7 @@ export function GeneratePage() {
             onChange={setProvider}
             disabled={isPolling}
           />
+          <CredentialSettings onChange={setCredentials} />
         </motion.div>
 
         <AnimatePresence mode="wait">

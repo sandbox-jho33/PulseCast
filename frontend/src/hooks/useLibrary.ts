@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import type { JobListItem } from '../types/podcast';
-import { listJobs as apiListJobs, deleteJob as apiDeleteJob } from '../api/podcast';
+import { listJobs as apiListJobs, deleteJob as apiDeleteJob, setAuthTokenGetter } from '../api/podcast';
 
 const ITEMS_PER_PAGE = 10;
 
 export function useLibrary() {
+  const { getToken } = useAuth();
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -28,6 +30,10 @@ export function useLibrary() {
       setIsLoading(false);
     }
   }, [page, search]);
+
+  useEffect(() => {
+    setAuthTokenGetter(getToken);
+  }, [getToken]);
 
   const deleteJobById = useCallback(async (jobId: string) => {
     setDeletingId(jobId);
