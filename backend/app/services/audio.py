@@ -251,6 +251,7 @@ async def upload_audio_to_storage(
 async def synthesize_segment(
     text: str,
     speaker: str,
+    user_id: str,
 ) -> Optional[bytes]:
     """
     Synthesize a single text segment using the TTS service.
@@ -262,14 +263,20 @@ async def synthesize_segment(
     Returns:
         Raw WAV audio bytes, or None if synthesis failed
     """
-    from .tts_client import get_tts_client
-
     speaker_role = speaker.lower()
     if speaker_role not in ("leo", "sarah"):
         logger.warning(f"Unknown speaker: {speaker}, defaulting to leo")
         speaker_role = "leo"
 
+    if os.getenv("TTS_PROVIDER", "elevenlabs").lower() == "elevenlabs":
+        return await synthesize_segment_elevenlabs(text, speaker_role, user_id)
+
+    if os.getenv("APP_ENV", "development").lower() == "production":
+        raise RuntimeError("Only ElevenLabs BYOK TTS is enabled in production")
+
     try:
+        from .tts_client import get_tts_client
+
         client = await get_tts_client()
         async with client:
             audio_bytes = await client.synthesize(
@@ -280,6 +287,43 @@ async def synthesize_segment(
         return audio_bytes
     except Exception as e:
         logger.error(f"TTS synthesis failed for segment: {e}")
+        return None
+
+
+async def synthesize_segment_elevenlabs(
+    text: str,
+    speaker_role: str,
+    user_id: str,
+) -> Optional[bytes]:
+    """Synthesize one segment with the user's ElevenLabs API key."""
+    from elevenlabs.client import ElevenLabs
+
+    from .credentials import CredentialProvider, get_user_api_key
+
+    api_key = await get_user_api_key(user_id, CredentialProvider.ELEVENLABS)
+    voice_env = "ELEVENLABS_LEO_VOICE_ID" if speaker_role == "leo" else "ELEVENLABS_SARAH_VOICE_ID"
+    voice_id = os.getenv(voice_env)
+    if not voice_id:
+        raise RuntimeError(f"{voice_env} must be configured")
+
+    model_id = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+    output_format = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
+
+    def _convert() -> bytes:
+        client = ElevenLabs(api_key=api_key)
+        audio_iter = client.text_to_speech.convert(
+            text=text,
+            voice_id=voice_id,
+            model_id=model_id,
+            output_format=output_format,
+            enable_logging=False,
+        )
+        return b"".join(audio_iter)
+
+    try:
+        return await asyncio.to_thread(_convert)
+    except Exception as exc:
+        logger.error("ElevenLabs synthesis failed: %s", exc)
         return None
 
 
@@ -299,7 +343,6 @@ def stitch_audio_with_pydub(
     """
     try:
         from pydub import AudioSegment as PydubAudioSegment
-        from pydub.generators import WhiteNoise
     except ImportError:
         logger.error("pydub not installed. Install with: pip install pydub")
         raise RuntimeError("pydub is required for audio stitching")
@@ -317,7 +360,10 @@ def stitch_audio_with_pydub(
 
         if segment.audio_bytes:
             try:
-                audio = PydubAudioSegment.from_wav(io.BytesIO(segment.audio_bytes))
+                try:
+                    audio = PydubAudioSegment.from_file(io.BytesIO(segment.audio_bytes))
+                except Exception:
+                    audio = PydubAudioSegment.from_wav(io.BytesIO(segment.audio_bytes))
                 combined += audio
                 combined += silence
             except Exception as e:
@@ -374,7 +420,11 @@ def save_audio_locally(
     return output_path
 
 
-async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
+async def synthesize_podcast_audio(
+    script: str,
+    job_id: str,
+    user_id: str = "test-user",
+) -> AudioResult:
     """
     Synthesize podcast audio from script.
 
@@ -407,7 +457,7 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
         )
 
     for segment in speaking_segments:
-        audio_bytes = await synthesize_segment(segment.text, segment.speaker)
+        audio_bytes = await synthesize_segment(segment.text, segment.speaker, user_id)
         segment.audio_bytes = audio_bytes
 
     segments_with_audio = [s for s in speaking_segments if s.audio_bytes]
@@ -446,7 +496,7 @@ async def synthesize_podcast_audio(script: str, job_id: str) -> AudioResult:
                     job_id,
                 )
 
-        if not final_url:
+        if not final_url and os.getenv("APP_ENV", "development").lower() != "production":
             save_audio_locally(final_audio, job_id, final_format)
             final_url = get_local_audio_url(job_id, final_format)
 
@@ -484,7 +534,8 @@ async def generate_tts_audio(
     Returns:
         Raw audio bytes, or None if synthesis failed
     """
-    return await synthesize_segment(text, speaker)
+    user_id = os.getenv("PULSECAST_TEST_USER_ID", "test-user")
+    return await synthesize_segment(text, speaker, user_id)
 
 
 async def stitch_audio_segments(

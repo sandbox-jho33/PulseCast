@@ -8,7 +8,6 @@ and a Supabase-backed implementation for production.
 from __future__ import annotations
 
 import os
-from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, List, Optional, Protocol
 
@@ -22,76 +21,119 @@ from ..models.state import (
 
 
 class PodcastStateRepository(Protocol):
-    """Protocol defining the repository interface for podcast state persistence."""
+    """Protocol defining podcast state and credential persistence."""
 
     async def save_state(self, state: PodcastState) -> None:
         """Persist the given podcast state."""
         ...
 
-    async def load_state(self, job_id: str) -> Optional[PodcastState]:
+    async def load_state(
+        self, job_id: str, user_id: Optional[str] = None
+    ) -> Optional[PodcastState]:
         """Load the latest podcast state for a job, or None if not found."""
         ...
 
-    async def delete_state(self, job_id: str) -> None:
+    async def delete_state(self, job_id: str, user_id: Optional[str] = None) -> None:
         """Remove a job's state from storage."""
         ...
 
     async def list_jobs(
-        self, limit: int = 50, offset: int = 0, search: str = ""
+        self,
+        user_id: str = "test-user",
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
     ) -> List[str]:
-        """List job IDs, ordered by creation date (newest first)."""
+        """List job IDs for one user, ordered by creation date."""
+        ...
+
+    async def save_user_credential(
+        self, user_id: str, provider: str, encrypted_api_key: str
+    ) -> None:
+        """Persist encrypted BYOK credentials for a user."""
+        ...
+
+    async def load_user_credential(self, user_id: str, provider: str) -> Optional[str]:
+        """Load encrypted BYOK credential for a user/provider."""
+        ...
+
+    async def list_user_credentials(self, user_id: str) -> List[dict]:
+        """List configured credential providers for a user."""
+        ...
+
+    async def delete_user_credential(self, user_id: str, provider: str) -> None:
+        """Delete one user credential."""
         ...
 
 
 class InMemoryPodcastStateRepository:
-    """
-    In-memory implementation of podcast state persistence.
-
-    For development and testing. Data is lost on restart.
-    """
+    """In-memory implementation for development and tests."""
 
     def __init__(self) -> None:
         self._store: Dict[str, PodcastState] = {}
+        self._credentials: Dict[tuple[str, str], dict] = {}
 
     async def save_state(self, state: PodcastState) -> None:
-        """Persist the given podcast state."""
         self._store[state.id] = state
 
-    async def load_state(self, job_id: str) -> Optional[PodcastState]:
-        """Load the latest podcast state for a job, or None if not found."""
-        return self._store.get(job_id)
+    async def load_state(
+        self, job_id: str, user_id: Optional[str] = None
+    ) -> Optional[PodcastState]:
+        state = self._store.get(job_id)
+        if state and user_id and state.user_id != user_id:
+            return None
+        return state
 
-    async def delete_state(self, job_id: str) -> None:
-        """Remove a job's state from storage."""
-        self._store.pop(job_id, None)
+    async def delete_state(self, job_id: str, user_id: Optional[str] = None) -> None:
+        state = self._store.get(job_id)
+        if state and (user_id is None or state.user_id == user_id):
+            self._store.pop(job_id, None)
 
     async def list_jobs(
-        self, limit: int = 50, offset: int = 0, search: str = ""
+        self,
+        user_id: str = "test-user",
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
     ) -> List[str]:
-        """List job IDs, ordered by creation date (newest first)."""
-        jobs = sorted(
-            self._store.values(),
-            key=lambda s: s.created_at,
-            reverse=True,
-        )
+        jobs = [state for state in self._store.values() if state.user_id == user_id]
+        jobs = sorted(jobs, key=lambda s: s.created_at, reverse=True)
         if search:
             search_lower = search.lower()
             jobs = [
-                j
-                for j in jobs
-                if (j.source_title and search_lower in j.source_title.lower())
-                or search_lower in j.source_url.lower()
+                job
+                for job in jobs
+                if (job.source_title and search_lower in job.source_title.lower())
+                or search_lower in job.source_url.lower()
             ]
         return [job.id for job in jobs[offset : offset + limit]]
 
+    async def save_user_credential(
+        self, user_id: str, provider: str, encrypted_api_key: str
+    ) -> None:
+        self._credentials[(user_id, provider)] = {
+            "provider": provider,
+            "encrypted_api_key": encrypted_api_key,
+            "updated_at": datetime.utcnow(),
+        }
+
+    async def load_user_credential(self, user_id: str, provider: str) -> Optional[str]:
+        record = self._credentials.get((user_id, provider))
+        return record["encrypted_api_key"] if record else None
+
+    async def list_user_credentials(self, user_id: str) -> List[dict]:
+        return [
+            {"provider": provider, "updated_at": record["updated_at"]}
+            for (owner, provider), record in self._credentials.items()
+            if owner == user_id
+        ]
+
+    async def delete_user_credential(self, user_id: str, provider: str) -> None:
+        self._credentials.pop((user_id, provider), None)
+
 
 class SupabasePodcastStateRepository:
-    """
-    Supabase-backed implementation of podcast state persistence.
-
-    Stores podcast jobs, scripts, and audio segments in Postgres.
-    Audio files are stored in Supabase Storage.
-    """
+    """Supabase-backed implementation for production."""
 
     def __init__(self) -> None:
         from .supabase_client import get_supabase_client
@@ -99,9 +141,7 @@ class SupabasePodcastStateRepository:
         self._client = get_supabase_client()
 
     async def save_state(self, state: PodcastState) -> None:
-        """Persist the given podcast state to Supabase."""
         job_data = self._state_to_job_row(state)
-
         self._client.table("podcast_jobs").upsert(job_data, on_conflict="id").execute()
 
         if state.script:
@@ -119,7 +159,6 @@ class SupabasePodcastStateRepository:
             self._client.table("audio_segments").delete().eq(
                 "job_id", str(state.id)
             ).execute()
-
             segment_rows = [
                 {
                     "job_id": str(state.id),
@@ -133,16 +172,13 @@ class SupabasePodcastStateRepository:
             if segment_rows:
                 self._client.table("audio_segments").insert(segment_rows).execute()
 
-    async def load_state(self, job_id: str) -> Optional[PodcastState]:
-        """Load the podcast state for a job from Supabase."""
-        response = (
-            self._client.table("podcast_jobs")
-            .select("*")
-            .eq("id", job_id)
-            .single()
-            .execute()
-        )
-
+    async def load_state(
+        self, job_id: str, user_id: Optional[str] = None
+    ) -> Optional[PodcastState]:
+        query = self._client.table("podcast_jobs").select("*").eq("id", job_id)
+        if user_id:
+            query = query.eq("user_id", user_id)
+        response = query.single().execute()
         if not response.data:
             return None
 
@@ -156,7 +192,6 @@ class SupabasePodcastStateRepository:
             .limit(1)
             .execute()
         )
-
         if scripts_response.data:
             latest_script = scripts_response.data[0]
             state.script = latest_script["content"]
@@ -169,7 +204,6 @@ class SupabasePodcastStateRepository:
             .order("sequence_order")
             .execute()
         )
-
         if segments_response.data:
             state.audio_segments = [
                 AudioSegment(
@@ -182,43 +216,93 @@ class SupabasePodcastStateRepository:
 
         return state
 
-    async def delete_state(self, job_id: str) -> None:
-        """Remove a job and all related data from Supabase."""
+    async def delete_state(self, job_id: str, user_id: Optional[str] = None) -> None:
         try:
             from .supabase_client import get_storage_bucket_name
 
             bucket = get_storage_bucket_name()
             files = self._client.storage.from_(bucket).list(job_id)
             if files:
-                file_paths = [f"{job_id}/{f['name']}" for f in files]
+                file_paths = [f"{job_id}/{file['name']}" for file in files]
                 self._client.storage.from_(bucket).remove(file_paths)
         except Exception:
             pass
 
-        self._client.table("podcast_jobs").delete().eq("id", job_id).execute()
+        query = self._client.table("podcast_jobs").delete().eq("id", job_id)
+        if user_id:
+            query = query.eq("user_id", user_id)
+        query.execute()
 
     async def list_jobs(
-        self, limit: int = 50, offset: int = 0, search: str = ""
+        self,
+        user_id: str = "test-user",
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
     ) -> List[str]:
-        """List job IDs, ordered by creation date (newest first)."""
         query = (
             self._client.table("podcast_jobs")
             .select("id")
+            .eq("user_id", user_id)
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
         )
         if search:
+            safe_search = search.replace(",", " ").replace("%", "\\%")
             query = query.or_(
-                f"source_title.ilike.%{search}%,source_url.ilike.%{search}%"
+                f"source_title.ilike.%{safe_search}%,source_url.ilike.%{safe_search}%"
             )
         response = query.execute()
-
         return [row["id"] for row in response.data]
 
+    async def save_user_credential(
+        self, user_id: str, provider: str, encrypted_api_key: str
+    ) -> None:
+        self._client.table("user_credentials").upsert(
+            {
+                "user_id": user_id,
+                "provider": provider,
+                "encrypted_api_key": encrypted_api_key,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            on_conflict="user_id,provider",
+        ).execute()
+
+    async def load_user_credential(self, user_id: str, provider: str) -> Optional[str]:
+        response = (
+            self._client.table("user_credentials")
+            .select("encrypted_api_key")
+            .eq("user_id", user_id)
+            .eq("provider", provider)
+            .single()
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data["encrypted_api_key"]
+
+    async def list_user_credentials(self, user_id: str) -> List[dict]:
+        response = (
+            self._client.table("user_credentials")
+            .select("provider,updated_at")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return response.data or []
+
+    async def delete_user_credential(self, user_id: str, provider: str) -> None:
+        (
+            self._client.table("user_credentials")
+            .delete()
+            .eq("user_id", user_id)
+            .eq("provider", provider)
+            .execute()
+        )
+
     def _state_to_job_row(self, state: PodcastState) -> dict:
-        """Convert PodcastState to a database row dict."""
         return {
             "id": str(state.id),
+            "user_id": state.user_id,
             "source_url": state.source_url,
             "source_title": state.source_title,
             "source_markdown": state.source_markdown,
@@ -242,9 +326,9 @@ class SupabasePodcastStateRepository:
         }
 
     def _job_row_to_state(self, row: dict) -> PodcastState:
-        """Convert a database row dict to PodcastState."""
         return PodcastState(
             id=row["id"],
+            user_id=row["user_id"],
             source_url=row["source_url"],
             source_title=row.get("source_title"),
             source_markdown=row.get("source_markdown"),
@@ -276,11 +360,7 @@ _repository: Optional[PodcastStateRepository] = None
 
 
 def get_repository() -> PodcastStateRepository:
-    """
-    Get the singleton repository instance.
-
-    Returns SupabaseRepository if SUPABASE_URL is set, otherwise InMemoryRepository.
-    """
+    """Get the singleton repository instance."""
     global _repository
     if _repository is None:
         if os.getenv("SUPABASE_URL"):

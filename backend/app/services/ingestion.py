@@ -7,8 +7,11 @@ Fetches content from URLs and extracts clean markdown.
 from __future__ import annotations
 
 import logging
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -24,6 +27,8 @@ _DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+_MAX_RESPONSE_BYTES = 2_000_000
+_ALLOWED_SCHEMES = {"http", "https"}
 
 
 @dataclass
@@ -45,18 +50,24 @@ async def ingest_source(source_url: str) -> IngestionResult:
     Raises:
         httpx.HTTPError: If the URL cannot be fetched.
     """
+    safe_url = _validate_public_url(source_url)
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=30.0,
+            follow_redirects=False,
+            timeout=httpx.Timeout(20.0, connect=5.0),
             headers=_DEFAULT_HEADERS,
         ) as client:
-            response = await client.get(source_url)
-            response.raise_for_status()
-            html = response.text
+            response = await _get_with_safe_redirects(client, safe_url)
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                raise RuntimeError("Source URL must return HTML content")
+            content = response.content
+            if len(content) > _MAX_RESPONSE_BYTES:
+                raise RuntimeError("Source content is too large")
+            html = content.decode(response.encoding or "utf-8", errors="replace")
     except httpx.HTTPError as e:
-        logger.exception("Failed to fetch source URL %s", source_url)
-        raise RuntimeError(f"Failed to fetch {source_url}: {e}") from e
+        logger.exception("Failed to fetch source URL %s", safe_url)
+        raise RuntimeError(f"Failed to fetch source URL: {e}") from e
 
     soup = _parse_html(html)
 
@@ -73,6 +84,55 @@ async def ingest_source(source_url: str) -> IngestionResult:
         )
 
     return IngestionResult(title=title, markdown=markdown)
+
+
+async def _get_with_safe_redirects(
+    client: httpx.AsyncClient,
+    source_url: str,
+    max_redirects: int = 5,
+) -> httpx.Response:
+    """Fetch a URL while validating every redirect target."""
+    url = source_url
+    for _ in range(max_redirects + 1):
+        response = await client.get(url)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            response.raise_for_status()
+            return response
+        location = response.headers.get("location")
+        if not location:
+            raise RuntimeError("Redirect response did not include a location")
+        url = str(httpx.URL(url).join(location))
+        _validate_public_url(url)
+    raise RuntimeError("Too many redirects")
+
+
+def _validate_public_url(source_url: str) -> str:
+    """Validate URL scheme and host to reduce SSRF risk."""
+    parsed = urlparse(source_url)
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        raise RuntimeError("Source URL must use http or https")
+    if not parsed.hostname:
+        raise RuntimeError("Source URL must include a hostname")
+
+    hostname = parsed.hostname
+    try:
+        addresses = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise RuntimeError("Source URL hostname could not be resolved") from exc
+
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise RuntimeError("Source URL must resolve to a public address")
+
+    return source_url
 
 
 def _parse_html(html: str) -> BeautifulSoup:

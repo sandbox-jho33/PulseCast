@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path as FilePath
@@ -21,8 +22,7 @@ from pathlib import Path as FilePath
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
 from fastapi.responses import FileResponse
 
-logger = logging.getLogger(__name__)
-
+from ...auth import CurrentUser
 from ...graph.graph import get_graph_runner
 from ...models.state import (
     AudioSegment,
@@ -40,10 +40,11 @@ from ...models.state import (
     new_state,
 )
 from ...services.audio import get_local_audio_path, synthesize_podcast_audio
+from ...services.credentials import CredentialProvider, get_user_api_key
 from ...services.ingestion import ingest_source
-from ...services.audio import get_local_audio_path
 from ...storage.repository import get_repository
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -62,13 +63,24 @@ def _is_retryable_audio_state(state: PodcastState) -> bool:
     return failed_at_audio or completed_without_audio
 
 
-async def _run_podcast_workflow(job_id: str) -> None:
+def _resolve_llm_provider(provider: str | None) -> CredentialProvider:
+    if provider == CredentialProvider.OPENAI.value:
+        return CredentialProvider.OPENAI
+    if provider == CredentialProvider.ANTHROPIC.value:
+        return CredentialProvider.ANTHROPIC
+    raise HTTPException(
+        status_code=400,
+        detail="Choose either openai or anthropic and configure its API key.",
+    )
+
+
+async def _run_podcast_workflow(job_id: str, user_id: str) -> None:
     """Background task to run the full podcast generation workflow."""
     repo = get_repository()
     graph = get_graph_runner()
 
     try:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if not state:
             return
 
@@ -90,7 +102,7 @@ async def _run_podcast_workflow(job_id: str) -> None:
 
     except Exception as e:
         logger.exception("Podcast workflow failed for job %s", job_id)
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if state:
             state.status = JobStatus.FAILED
             state.error_message = str(e)
@@ -102,6 +114,7 @@ async def _run_podcast_workflow(job_id: str) -> None:
 async def generate_podcast(
     request: GenerateRequest,
     background_tasks: BackgroundTasks,
+    user: CurrentUser,
 ) -> GenerateResponse:
     """
     Start a new podcast generation job.
@@ -109,17 +122,24 @@ async def generate_podcast(
     Creates a new job, initializes state, and starts the workflow in the background.
     """
     job_id = str(uuid.uuid4())
+    provider = _resolve_llm_provider(request.llm_provider)
+    try:
+        await get_user_api_key(user.user_id, provider)
+        await get_user_api_key(user.user_id, CredentialProvider.ELEVENLABS)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     state = new_state(
         job_id,
+        user.user_id,
         request.source_url,
-        llm_provider=request.llm_provider,
+        llm_provider=provider.value,
     )
 
     repo = get_repository()
     await repo.save_state(state)
 
-    background_tasks.add_task(_run_podcast_workflow, job_id)
+    background_tasks.add_task(_run_podcast_workflow, job_id, user.user_id)
 
     return GenerateResponse(
         job_id=job_id,
@@ -130,6 +150,7 @@ async def generate_podcast(
 
 @router.get("/jobs", response_model=JobListResponse)
 async def list_podcast_jobs(
+    user: CurrentUser,
     limit: int = 50,
     offset: int = 0,
     search: str = "",
@@ -141,11 +162,19 @@ async def list_podcast_jobs(
     Optional search filter matches against source_title and source_url.
     """
     repo = get_repository()
-    job_ids = await repo.list_jobs(limit=limit, offset=offset, search=search)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    search = search[:100]
+    job_ids = await repo.list_jobs(
+        user_id=user.user_id,
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
 
     jobs = []
     for job_id in job_ids:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user.user_id)
         if state:
             jobs.append(
                 JobListItem(
@@ -163,6 +192,7 @@ async def list_podcast_jobs(
 
 @router.get("/status/{job_id}", response_model=StatusResponse)
 async def get_podcast_status(
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
 ) -> StatusResponse:
     """
@@ -171,7 +201,7 @@ async def get_podcast_status(
     Returns status, progress, and final URL if completed.
     """
     repo = get_repository()
-    state = await repo.load_state(job_id)
+    state = await repo.load_state(job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -206,6 +236,7 @@ async def get_podcast_status(
 
 @router.get("/download/{job_id}", response_model=DownloadResponse)
 async def download_podcast(
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
 ) -> DownloadResponse:
     """
@@ -214,7 +245,7 @@ async def download_podcast(
     Returns 409 if the job is not yet completed.
     """
     repo = get_repository()
-    state = await repo.load_state(job_id)
+    state = await repo.load_state(job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -239,10 +270,16 @@ async def download_podcast(
 
 @router.get("/local-audio/{job_id}.{extension}")
 async def get_local_audio(
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
     extension: str = Path(..., description="Audio extension (mp3 or wav)."),
 ) -> FileResponse:
     """Serve locally generated audio files in development."""
+    if os.getenv("APP_ENV", "development").lower() == "production":
+        raise HTTPException(status_code=404, detail="Local audio is disabled")
+    state = await get_repository().load_state(job_id, user_id=user.user_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     allowed_extensions = {"mp3": "audio/mpeg", "wav": "audio/wav"}
     if extension not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Unsupported audio extension")
@@ -268,6 +305,7 @@ async def get_local_audio(
 )
 async def retry_audio_synthesis(
     background_tasks: BackgroundTasks,
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
 ) -> StatusResponse:
     """
@@ -276,7 +314,7 @@ async def retry_audio_synthesis(
     This path skips ingestion and graph script-generation nodes.
     """
     repo = get_repository()
-    state = await repo.load_state(job_id)
+    state = await repo.load_state(job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -312,7 +350,11 @@ async def retry_audio_synthesis(
     state.updated_at = datetime.utcnow()
     await repo.save_state(state)
 
-    background_tasks.add_task(_retry_audio_workflow, job_id)
+    try:
+        await get_user_api_key(user.user_id, CredentialProvider.ELEVENLABS)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(_retry_audio_workflow, job_id, user.user_id)
 
     return StatusResponse(
         job_id=state.id,
@@ -331,6 +373,7 @@ async def retry_audio_synthesis(
 async def edit_podcast(
     request: EditRequest,
     background_tasks: BackgroundTasks,
+    user: CurrentUser,
 ) -> EditResponse:
     """
     Edit the script of a podcast job.
@@ -338,7 +381,7 @@ async def edit_podcast(
     Optionally resume from the director node if resume_from_director is true.
     """
     repo = get_repository()
-    state = await repo.load_state(request.job_id)
+    state = await repo.load_state(request.job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found")
@@ -354,7 +397,7 @@ async def edit_podcast(
         state.updated_at = datetime.utcnow()
         await repo.save_state(state)
 
-        background_tasks.add_task(_resume_from_director, request.job_id)
+        background_tasks.add_task(_resume_from_director, request.job_id, user.user_id)
 
     return EditResponse(
         job_id=state.id,
@@ -363,13 +406,13 @@ async def edit_podcast(
     )
 
 
-async def _resume_from_director(job_id: str) -> None:
+async def _resume_from_director(job_id: str, user_id: str) -> None:
     """Resume workflow from the director node."""
     repo = get_repository()
     graph = get_graph_runner()
 
     try:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if not state:
             return
 
@@ -378,7 +421,7 @@ async def _resume_from_director(job_id: str) -> None:
         await repo.save_state(state)
 
     except Exception as e:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if state:
             state.status = JobStatus.FAILED
             state.error_message = str(e)
@@ -386,16 +429,16 @@ async def _resume_from_director(job_id: str) -> None:
             await repo.save_state(state)
 
 
-async def _retry_audio_workflow(job_id: str) -> None:
+async def _retry_audio_workflow(job_id: str, user_id: str) -> None:
     """Background task to rerun only TTS synthesis/stitch/upload for an existing job."""
     repo = get_repository()
 
     try:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if not state or not state.script or not state.script.strip():
             return
 
-        result = await synthesize_podcast_audio(state.script, job_id)
+        result = await synthesize_podcast_audio(state.script, job_id, user_id)
         state.audio_segments = [
             AudioSegment(
                 speaker=segment.speaker,
@@ -426,7 +469,7 @@ async def _retry_audio_workflow(job_id: str) -> None:
         await repo.save_state(state)
 
     except Exception as e:
-        state = await repo.load_state(job_id)
+        state = await repo.load_state(job_id, user_id=user_id)
         if state:
             state.status = JobStatus.FAILED
             state.current_step = CurrentStep.AUDIO
@@ -438,11 +481,12 @@ async def _retry_audio_workflow(job_id: str) -> None:
 
 @router.get("/{job_id}/script")
 async def get_script(
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
 ) -> dict:
     """Get the current script for a job."""
     repo = get_repository()
-    state = await repo.load_state(job_id)
+    state = await repo.load_state(job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -457,6 +501,7 @@ async def get_script(
 
 @router.delete("/{job_id}", status_code=204)
 async def delete_podcast(
+    user: CurrentUser,
     job_id: str = Path(..., description="Podcast generation job identifier."),
 ) -> None:
     """
@@ -465,9 +510,9 @@ async def delete_podcast(
     Removes the job record, scripts, audio segments, and audio files from storage.
     """
     repo = get_repository()
-    state = await repo.load_state(job_id)
+    state = await repo.load_state(job_id, user_id=user.user_id)
 
     if not state:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    await repo.delete_state(job_id)
+    await repo.delete_state(job_id, user_id=user.user_id)

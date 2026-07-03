@@ -44,6 +44,7 @@ class AudioSegment(BaseModel):
 
 class PodcastState(BaseModel):
     id: str = Field(..., description="Unique identifier for this podcast job.")
+    user_id: str = Field(..., description="Clerk user that owns this podcast job.")
     source_url: str = Field(..., description="Original content source URL.")
     source_title: Optional[str] = Field(
         default=None, description="Title extracted from source."
@@ -100,7 +101,7 @@ class PodcastState(BaseModel):
     )
 
     llm_provider: Optional[str] = Field(
-        default=None, description="LLM provider: 'ollama', 'openai', or 'anthropic'."
+        default=None, description="LLM provider: 'openai' or 'anthropic'."
     )
 
 
@@ -126,7 +127,7 @@ class GenerateRequest(BaseModel):
         ..., description="URL of the content to convert to podcast."
     )
     llm_provider: Optional[str] = Field(
-        default=None, description="LLM provider: 'ollama', 'openai', or 'anthropic'."
+        default=None, description="LLM provider: 'openai' or 'anthropic'."
     )
 
 
@@ -183,12 +184,14 @@ class EditResponse(BaseModel):
 
 def new_state(
     job_id: str,
+    user_id: str,
     source_url: str,
     llm_provider: Optional[str] = None,
 ) -> PodcastState:
     """Create a new PodcastState with default values."""
     return PodcastState(
         id=job_id,
+        user_id=user_id,
         source_url=source_url,
         status=JobStatus.PENDING,
         current_step=CurrentStep.INGESTING,

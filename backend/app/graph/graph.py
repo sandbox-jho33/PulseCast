@@ -23,6 +23,7 @@ from ..models.state import (
     JobStatus,
     PodcastState,
 )
+from ..services.credentials import get_user_api_key
 from .checkpointer import get_checkpointer, make_thread_config
 
 
@@ -51,17 +52,22 @@ class GraphState(TypedDict):
     final_podcast_url: str
     duration_seconds: float
     llm_provider: str
+    user_id: str
 
 
-def _get_llm(provider: str = ""):
-    """Get the LLM client. Provider from graph state; key from env."""
-    return get_llm(provider=provider or None)
+async def _get_llm(provider: str, user_id: str):
+    """Get the LLM client using the signed-in user's BYOK credential."""
+    if not provider:
+        raise RuntimeError("No LLM provider selected")
+    api_key = await get_user_api_key(user_id, provider)
+    return get_llm(provider=provider, api_key=api_key)
 
 
 def _state_to_graph(state: PodcastState) -> GraphState:
     """Convert PodcastState to GraphState."""
     return GraphState(
         job_id=state.id,
+        user_id=state.user_id,
         source_url=state.source_url,
         source_title=state.source_title or "",
         source_markdown=state.source_markdown or "",
@@ -100,6 +106,7 @@ def _graph_to_state(graph_state: GraphState, base_state: PodcastState) -> Podcas
 
     return PodcastState(
         id=base_state.id,
+        user_id=base_state.user_id,
         source_url=base_state.source_url,
         source_title=graph_state["source_title"] or base_state.source_title,
         created_at=base_state.created_at,
@@ -379,10 +386,7 @@ def _detect_covered_points(script: str, knowledge_points_list: list[str]) -> lis
     covered = []
     script_lower = script.lower()
 
-    script_key_phrases = set(_extract_key_phrases(script))
-
     for point in knowledge_points_list:
-        point_lower = point.lower()
         point_phrases = _extract_key_phrases(point)
 
         if not point_phrases:
@@ -495,7 +499,7 @@ async def researcher_node(state: GraphState) -> Dict[str, Any]:
 
     Reads source_markdown and produces a beat-sheet of key points.
     """
-    llm = _get_llm(state.get("llm_provider", ""))
+    llm = await _get_llm(state.get("llm_provider", ""), state["user_id"])
 
     messages = [
         SystemMessage(content=RESEARCHER_SYSTEM),
@@ -520,7 +524,7 @@ async def leo_node(state: GraphState) -> Dict[str, Any]:
     """
     Draft engaging script content as Leo (visionary host).
     """
-    llm = _get_llm(state.get("llm_provider", ""))
+    llm = await _get_llm(state.get("llm_provider", ""), state["user_id"])
 
     existing_script = state.get("script", "")
     knowledge_points_list = state.get("knowledge_points_list", [])
@@ -600,7 +604,7 @@ async def sarah_node(state: GraphState) -> Dict[str, Any]:
     """
     Add Sarah's responses to the script.
     """
-    llm = _get_llm(state.get("llm_provider", ""))
+    llm = await _get_llm(state.get("llm_provider", ""), state["user_id"])
 
     existing_script = state.get("script", "")
     knowledge_points_list = state.get("knowledge_points_list", [])
@@ -671,7 +675,7 @@ async def director_node(state: GraphState) -> Dict[str, Any]:
     Review the script and decide APPROVE or CONTINUE.
     Coverage-first approach with 1000-word minimum floor.
     """
-    llm = _get_llm(state.get("llm_provider", ""))
+    llm = await _get_llm(state.get("llm_provider", ""), state["user_id"])
 
     script = state["script"]
     knowledge_points_list = state.get("knowledge_points_list", [])
@@ -833,7 +837,7 @@ async def audio_node(state: GraphState) -> Dict[str, Any]:
     logger.info(f"Starting audio synthesis for job {job_id}")
 
     try:
-        result = await synthesize_podcast_audio(script, job_id)
+        result = await synthesize_podcast_audio(script, job_id, state["user_id"])
 
         audio_segments = [
             {
