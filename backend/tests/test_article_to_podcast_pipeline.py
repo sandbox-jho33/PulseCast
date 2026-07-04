@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import re
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,31 +24,6 @@ from app.storage.repository import (
 )
 
 
-class _DummyArticleHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        html = """
-        <html>
-          <head><title>Mini Dummy Article</title></head>
-          <body>
-            <article>
-              <h1>Mini Dummy Article</h1>
-              <p>Solar bees thrive in rooftop gardens and improve city harvest reliability.</p>
-              <p>This article is intentionally tiny so the end-to-end test stays fast.</p>
-            </article>
-          </body>
-        </html>
-        """
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args) -> None:  # type: ignore[override]
-        return None
-
-
 class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
     persisted_job_id: str | None = None
 
@@ -58,16 +31,11 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls) -> None:
         load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
-        cls._server = ThreadingHTTPServer(("127.0.0.1", 0), _DummyArticleHandler)
-        cls._thread = threading.Thread(target=cls._server.serve_forever, daemon=True)
-        cls._thread.start()
-        cls.article_url = f"http://127.0.0.1:{cls._server.server_port}/article"
+        cls.article_url = "https://example.com/article"
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._server.shutdown()
-        cls._server.server_close()
-        cls._thread.join(timeout=2)
+        pass
 
     def setUp(self) -> None:
         reset_repository()
