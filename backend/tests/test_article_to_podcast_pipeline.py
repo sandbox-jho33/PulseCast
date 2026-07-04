@@ -7,13 +7,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks
 from langchain_ollama import ChatOllama
 
 from app.api.routes import podcast as podcast_routes
+from app.auth import AuthenticatedUser
 from app.graph import graph as graph_module
 from app.models.state import CurrentStep, DirectorDecision, GenerateRequest, JobStatus
+from app.services.credentials import CredentialProvider, save_user_credential
+from app.services.ingestion import IngestionResult
 from app.services.tts_client import TTSClient
 from app.storage.repository import (
     SupabasePodcastStateRepository,
@@ -84,6 +88,18 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
             await repo.list_jobs(limit=1)
         except Exception as exc:
             self.fail(f"Supabase preflight failed: {type(exc).__name__}: {exc!r}")
+
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.get("http://127.0.0.1:11434/api/tags")
+        except Exception as exc:
+            self.skipTest(f"Ollama is not reachable at 127.0.0.1:11434: {exc!r}")
+
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.get("http://127.0.0.1:5002/health")
+        except Exception as exc:
+            self.skipTest(f"TTS service is not reachable at 127.0.0.1:5002: {exc!r}")
 
         original_state_to_graph = graph_module._state_to_graph
         original_parse_knowledge_points = graph_module._parse_knowledge_points
@@ -181,8 +197,20 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
         async def _get_fast_tts_client() -> TTSClient:
             return _CountingTTSClient(base_url="http://127.0.0.1:5002", timeout=30.0)
 
+        async def _ingest_dummy_article(source_url: str) -> IngestionResult:
+            _ = source_url
+            return IngestionResult(
+                title="Mini Dummy Article",
+                markdown=(
+                    "# Mini Dummy Article\n\n"
+                    "Solar bees thrive in rooftop gardens and improve city harvest reliability.\n\n"
+                    "This article is intentionally tiny so the end-to-end test stays fast."
+                ),
+            )
+
         background_tasks = BackgroundTasks()
         job_id: str | None = None
+        user = AuthenticatedUser(user_id="test-user")
 
         with (
             patch.dict(
@@ -230,13 +258,31 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
             patch("app.graph.graph.leo_node", side_effect=_short_leo_node),
             patch("app.graph.graph.sarah_node", side_effect=_short_sarah_node),
             patch(
+                "app.api.routes.podcast.ingest_source",
+                side_effect=_ingest_dummy_article,
+            ),
+            patch(
                 "app.services.tts_client.get_tts_client",
                 side_effect=_get_fast_tts_client,
             ),
         ):
+            await save_user_credential(
+                user.user_id,
+                CredentialProvider.OPENAI,
+                "test-openai-key",
+            )
+            await save_user_credential(
+                user.user_id,
+                CredentialProvider.ELEVENLABS,
+                "test-elevenlabs-key",
+            )
             response = await podcast_routes.generate_podcast(
-                GenerateRequest(source_url=self.article_url),
+                GenerateRequest(
+                    source_url=self.article_url,
+                    llm_provider=CredentialProvider.OPENAI.value,
+                ),
                 background_tasks,
+                user,
             )
             job_id = response.job_id
 

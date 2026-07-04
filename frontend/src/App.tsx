@@ -1,4 +1,4 @@
-import { SignInButton, SignedIn, SignedOut } from '@clerk/clerk-react';
+import { SignInButton, SignUpButton, SignedIn, SignedOut } from '@clerk/clerk-react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { GeneratePage } from './pages/GeneratePage';
 import { LibraryPage } from './components/Library';
@@ -11,11 +11,18 @@ function AuthGate() {
         <p className="text-sm text-muted leading-relaxed mb-6">
           Sign in to generate private podcasts and securely manage your own AI provider keys.
         </p>
-        <SignInButton mode="modal">
-          <button className="px-5 py-2.5 rounded-full bg-accent text-white text-sm font-medium hover:opacity-90 transition-opacity">
-            Sign in
-          </button>
-        </SignInButton>
+        <div className="flex items-center justify-center gap-3">
+          <SignInButton mode="modal">
+            <button className="px-5 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-surface transition-colors">
+              Sign in
+            </button>
+          </SignInButton>
+          <SignUpButton mode="modal">
+            <button className="px-5 py-2.5 rounded-full bg-accent text-white text-sm font-medium hover:opacity-90 transition-opacity">
+              Sign up
+            </button>
+          </SignUpButton>
+        </div>
       </div>
     </div>
   );
