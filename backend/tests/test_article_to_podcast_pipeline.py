@@ -283,9 +283,7 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(final_state.audio_segments)
         self.assertGreaterEqual(len(final_state.audio_segments or []), 2)
-        self.assertTrue(
-            (final_state.final_podcast_url or "").startswith(("http://", "https://"))
-        )
+        self.assertTrue((final_state.final_podcast_url or "").startswith("storage://"))
         self.assertGreaterEqual(llm_counter.calls, 3)
         self.assertGreaterEqual(_CountingTTSClient.synth_calls, 1)
 
@@ -296,7 +294,7 @@ class TestArticleToPodcastPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db_loaded_state.id, job_id)
         self.assertEqual(db_loaded_state.status, JobStatus.COMPLETED)
         self.assertTrue(
-            (db_loaded_state.final_podcast_url or "").startswith(("http://", "https://"))
+            (db_loaded_state.final_podcast_url or "").startswith("storage://")
         )
 
         job_ids = await fresh_db_repo.list_jobs(limit=200, search="Mini Dummy Article")

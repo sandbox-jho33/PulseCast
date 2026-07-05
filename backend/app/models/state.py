@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class JobStatus(str, Enum):
@@ -124,11 +124,22 @@ class PodcastStateUpdate(BaseModel):
 
 class GenerateRequest(BaseModel):
     source_url: str = Field(
-        ..., description="URL of the content to convert to podcast."
+        ...,
+        min_length=8,
+        max_length=2048,
+        description="URL of the content to convert to podcast.",
     )
     llm_provider: Optional[str] = Field(
         default=None, description="LLM provider: 'openai' or 'anthropic'."
     )
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("Source URL must start with http:// or https://")
+        return normalized
 
 
 class GenerateResponse(BaseModel):
@@ -145,6 +156,7 @@ class StatusResponse(BaseModel):
     script_version: int
     source_title: Optional[str]
     final_podcast_url: Optional[str]
+    audio_ready: bool = False
     duration_seconds: Optional[float] = None
     error_message: Optional[str]
 
@@ -169,8 +181,13 @@ class JobListResponse(BaseModel):
 
 
 class EditRequest(BaseModel):
-    job_id: str = Field(..., description="Job ID to edit.")
-    script: str = Field(..., description="New script content.")
+    job_id: str = Field(..., min_length=1, max_length=64, description="Job ID to edit.")
+    script: str = Field(
+        ...,
+        min_length=1,
+        max_length=40000,
+        description="New script content.",
+    )
     resume_from_director: bool = Field(
         default=False, description="Resume workflow from director."
     )

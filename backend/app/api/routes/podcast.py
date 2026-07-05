@@ -39,7 +39,12 @@ from ...models.state import (
     StatusResponse,
     new_state,
 )
-from ...services.audio import get_local_audio_path, synthesize_podcast_audio
+from ...services.audio import (
+    create_signed_audio_url,
+    get_local_audio_path,
+    is_private_storage_url,
+    synthesize_podcast_audio,
+)
 from ...services.credentials import CredentialProvider, get_user_api_key
 from ...services.ingestion import ingest_source
 from ...storage.repository import get_repository
@@ -61,6 +66,37 @@ def _is_retryable_audio_state(state: PodcastState) -> bool:
         and (not state.final_podcast_url or has_unplayable_url)
     )
     return failed_at_audio or completed_without_audio
+
+
+def _audio_ready(state: PodcastState) -> bool:
+    return bool(
+        state.final_podcast_url and not state.final_podcast_url.startswith("file://")
+    )
+
+
+def _public_audio_url(state: PodcastState) -> str | None:
+    if is_private_storage_url(state.final_podcast_url):
+        return None
+    return state.final_podcast_url
+
+
+def _status_response(
+    state: PodcastState,
+    current_step: CurrentStep | None = None,
+    progress_pct: int | None = None,
+) -> StatusResponse:
+    return StatusResponse(
+        job_id=state.id,
+        status=state.status,
+        current_step=current_step or state.current_step,
+        progress_pct=progress_pct if progress_pct is not None else state.progress_pct,
+        script_version=state.script_version,
+        source_title=state.source_title,
+        final_podcast_url=_public_audio_url(state),
+        audio_ready=_audio_ready(state),
+        duration_seconds=state.duration_seconds,
+        error_message=state.error_message,
+    )
 
 
 def _resolve_llm_provider(provider: str | None) -> CredentialProvider:
@@ -221,17 +257,7 @@ async def get_podcast_status(
             if isinstance(checkpoint_state.get("progress_pct"), int):
                 progress_pct = checkpoint_state["progress_pct"]
 
-    return StatusResponse(
-        job_id=state.id,
-        status=state.status,
-        current_step=current_step,
-        progress_pct=progress_pct,
-        script_version=state.script_version,
-        source_title=state.source_title,
-        final_podcast_url=state.final_podcast_url,
-        duration_seconds=state.duration_seconds,
-        error_message=state.error_message,
-    )
+    return _status_response(state, current_step=current_step, progress_pct=progress_pct)
 
 
 @router.get("/download/{job_id}", response_model=DownloadResponse)
@@ -262,8 +288,14 @@ async def download_podcast(
             detail=f"Job {job_id} does not have a final audio URL yet",
         )
 
+    final_podcast_url = (
+        await create_signed_audio_url(state.final_podcast_url)
+        if is_private_storage_url(state.final_podcast_url)
+        else state.final_podcast_url
+    )
+
     return DownloadResponse(
-        final_podcast_url=state.final_podcast_url,
+        final_podcast_url=final_podcast_url,
         duration_seconds=state.duration_seconds,
     )
 
@@ -356,17 +388,7 @@ async def retry_audio_synthesis(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     background_tasks.add_task(_retry_audio_workflow, job_id, user.user_id)
 
-    return StatusResponse(
-        job_id=state.id,
-        status=state.status,
-        current_step=state.current_step,
-        progress_pct=state.progress_pct,
-        script_version=state.script_version,
-        source_title=state.source_title,
-        final_podcast_url=state.final_podcast_url,
-        duration_seconds=state.duration_seconds,
-        error_message=state.error_message,
-    )
+    return _status_response(state)
 
 
 @router.patch("/edit", response_model=EditResponse)

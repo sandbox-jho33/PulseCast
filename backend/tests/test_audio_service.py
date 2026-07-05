@@ -4,6 +4,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.services.audio import (
+    build_private_storage_url,
+    create_signed_audio_url,
+    parse_private_storage_url,
     parse_script_to_segments,
     synthesize_podcast_audio,
     upload_audio_to_storage,
@@ -90,13 +93,13 @@ class TestAudioService(unittest.IsolatedAsyncioTestCase):
                 return_value="podcast-audio",
             ),
         ):
-            public_url = await upload_audio_to_storage(
+            storage_url = await upload_audio_to_storage(
                 b"audio-bytes",
                 "job-1/podcast.mp3",
                 "audio/mpeg",
             )
 
-        self.assertEqual(public_url, "https://storage.example/job-1/podcast.mp3")
+        self.assertEqual(storage_url, "storage://podcast-audio/job-1/podcast.mp3")
         self.assertEqual(len(bucket.upload_calls), 3)
         self.assertEqual(bucket.upload_calls[0][2]["upsert"], "true")
 
@@ -121,14 +124,42 @@ class TestAudioService(unittest.IsolatedAsyncioTestCase):
                 return_value="podcast-audio",
             ),
         ):
-            public_url = await upload_audio_to_storage(
+            storage_url = await upload_audio_to_storage(
                 b"audio-bytes",
                 "job-legacy/podcast.mp3",
                 "audio/mpeg",
             )
 
-        self.assertEqual(public_url, "https://storage.example/job-legacy/podcast.mp3")
+        self.assertEqual(storage_url, "storage://podcast-audio/job-legacy/podcast.mp3")
         self.assertEqual(len(bucket.upload_calls), 1)
+
+    async def test_private_storage_url_can_be_signed(self) -> None:
+        class _SigningBucket:
+            def create_signed_url(self, path: str, expires_in: int) -> dict:
+                return {
+                    "signedURL": f"https://storage.example/signed/{path}?e={expires_in}"
+                }
+
+        client = _FakeSupabaseClient(_FakeBucket())
+        client.storage = _FakeStorage(_SigningBucket())  # type: ignore[assignment]
+
+        with patch(
+            "app.storage.supabase_client.get_supabase_client",
+            return_value=client,
+        ):
+            signed_url = await create_signed_audio_url(
+                build_private_storage_url("podcast-audio", "job-1/podcast.mp3"),
+                expires_in=60,
+            )
+
+        self.assertEqual(
+            parse_private_storage_url("storage://podcast-audio/job-1/podcast.mp3"),
+            ("podcast-audio", "job-1/podcast.mp3"),
+        )
+        self.assertEqual(
+            signed_url,
+            "https://storage.example/signed/job-1/podcast.mp3?e=60",
+        )
 
     async def test_falls_back_to_local_url_when_storage_upload_returns_none(
         self,
@@ -177,7 +208,7 @@ class TestAudioService(unittest.IsolatedAsyncioTestCase):
             patch(
                 "app.services.audio.upload_audio_to_storage",
                 new=AsyncMock(
-                    return_value="https://storage.example/job-2/podcast.wav"
+                    return_value="storage://podcast-audio/job-2/podcast.wav"
                 ),
             ),
             patch("app.services.audio.save_audio_locally") as save_local_mock,
@@ -186,6 +217,6 @@ class TestAudioService(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result.final_url,
-            "https://storage.example/job-2/podcast.wav",
+            "storage://podcast-audio/job-2/podcast.wav",
         )
         save_local_mock.assert_not_called()

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _LOCAL_AUDIO_DIR = "pulsecast"
 _STORAGE_UPLOAD_MAX_ATTEMPTS = 3
 _STORAGE_UPLOAD_RETRY_DELAY_SECONDS = 0.5
+_STORAGE_URL_PREFIX = "storage://"
 
 _TRANSIENT_STORAGE_ERROR_MARKERS = (
     "timeout",
@@ -182,7 +183,7 @@ async def upload_audio_to_storage(
         content_type: MIME type of the audio
 
     Returns:
-        Public URL of the uploaded file, or None if upload failed
+        Private storage URL marker, or None if upload failed.
     """
     if not os.getenv("SUPABASE_URL"):
         return None
@@ -218,8 +219,7 @@ async def upload_audio_to_storage(
                     },
                 )
 
-                public_url = client.storage.from_(bucket).get_public_url(file_path)
-                return public_url
+                return build_private_storage_url(bucket, file_path)
             except Exception as e:
                 message = str(e).lower()
                 is_transient = any(
@@ -246,6 +246,51 @@ async def upload_audio_to_storage(
         logger.error(f"Failed to upload audio to storage: {e}")
 
     return None
+
+
+def build_private_storage_url(bucket: str, file_path: str) -> str:
+    """Return an internal marker for a private Supabase Storage object."""
+    return f"{_STORAGE_URL_PREFIX}{bucket}/{file_path.lstrip('/')}"
+
+
+def is_private_storage_url(url: str | None) -> bool:
+    """Return True when a stored audio URL is a private storage marker."""
+    return bool(url and url.startswith(_STORAGE_URL_PREFIX))
+
+
+def parse_private_storage_url(url: str) -> tuple[str, str]:
+    """Extract bucket and path from a private storage marker."""
+    if not is_private_storage_url(url):
+        raise ValueError("Audio URL is not a private storage marker")
+    remainder = url[len(_STORAGE_URL_PREFIX) :]
+    bucket, separator, file_path = remainder.partition("/")
+    if not bucket or not separator or not file_path:
+        raise ValueError("Private storage marker is malformed")
+    return bucket, file_path
+
+
+async def create_signed_audio_url(storage_url: str, expires_in: int = 300) -> str:
+    """Create a short-lived signed URL for a private Supabase audio object."""
+    from ..storage.supabase_client import get_supabase_client
+
+    bucket, file_path = parse_private_storage_url(storage_url)
+    response = get_supabase_client().storage.from_(bucket).create_signed_url(
+        file_path,
+        expires_in,
+    )
+    if isinstance(response, dict):
+        signed_url = (
+            response.get("signedURL")
+            or response.get("signedUrl")
+            or response.get("signed_url")
+        )
+    else:
+        signed_url = getattr(response, "signed_url", None) or getattr(
+            response, "signedURL", None
+        )
+    if not isinstance(signed_url, str) or not signed_url:
+        raise RuntimeError("Unable to create signed audio URL")
+    return signed_url
 
 
 async def synthesize_segment(
