@@ -222,7 +222,9 @@ export function useJob() {
     const params = new URLSearchParams(window.location.search);
     const jobParam = params.get('job');
     if (jobParam && !jobId) {
-      loadJob(jobParam);
+      queueMicrotask(() => {
+        void loadJob(jobParam);
+      });
     }
   }, [jobId, loadJob]);
 

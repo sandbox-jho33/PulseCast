@@ -30,7 +30,9 @@ export function CredentialSettings({ onChange }: CredentialSettingsProps) {
   }, [onChange]);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(() => {
+      void refresh();
+    });
   }, [refresh]);
 
   const isConfigured = useCallback(

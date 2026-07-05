@@ -10,7 +10,10 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
   const [localValue, setLocalValue] = useState(value);
 
   useEffect(() => {
-    setLocalValue(value);
+    const timer = window.setTimeout(() => {
+      setLocalValue(value);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [value]);
 
   useEffect(() => {

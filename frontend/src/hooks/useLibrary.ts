@@ -72,7 +72,9 @@ export function useLibrary() {
   }, [totalPages]);
 
   useEffect(() => {
-    loadJobs();
+    queueMicrotask(() => {
+      void loadJobs();
+    });
   }, [loadJobs]);
 
   return {
