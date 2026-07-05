@@ -109,9 +109,4 @@ CREATE POLICY "Service role has full access on audio_segments" ON audio_segments
 -- Create storage bucket for podcast audio files
 -- =============================================================================
 
--- Run this separately in Supabase Dashboard > Storage:
--- Create bucket named "podcast-audio" with public access enabled
-
--- Storage policies (run after creating bucket):
--- INSERT policy: Allow service role to upload
--- SELECT policy: Allow public read access (for audio playback)
+-- Storage is configured by 004_private_audio_storage.sql.

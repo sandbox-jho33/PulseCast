@@ -248,12 +248,13 @@ BACKEND_PUBLIC_URL=http://localhost:8000
 
 ### Persistent Supabase Mode
 
-Use this when you want persisted jobs, script versions, audio segments, and publicly accessible storage URLs.
+Use this when you want persisted jobs, script versions, audio segments, and private cloud audio storage.
 
 Behavior:
 
 - Job state is stored in Supabase Postgres
-- Final audio is uploaded to Supabase Storage when upload succeeds
+- Final audio is uploaded to private Supabase Storage when upload succeeds
+- Playback uses short-lived signed URLs returned by the authenticated backend
 - Job history survives backend restarts
 - Storage access works best with `SUPABASE_SERVICE_ROLE_KEY`
 
@@ -312,15 +313,14 @@ curl http://localhost:8000/api/v1/podcast/status/<job_id>
 
 ### Supabase migrations
 
-If you want persistent storage, run the SQL migration in `backend/migrations/001_initial_schema.sql`.
+If you want persistent storage, run the SQL migrations in `backend/migrations/` in order.
 
 Recommended path:
 
 1. Open your Supabase project dashboard.
 2. Go to **SQL Editor**.
-3. Paste the contents of `backend/migrations/001_initial_schema.sql`.
-4. Run the migration.
-5. Create a public storage bucket named `podcast-audio`.
+3. Paste and run each migration file from `001_initial_schema.sql` through `004_private_audio_storage.sql`.
+4. Keep the `podcast-audio` bucket private. The storage migration creates or updates it.
 
 The backend migration notes also live in `backend/migrations/README.md`.
 
@@ -435,7 +435,7 @@ This is normal in local development. It only becomes a problem if:
 
 - `BACKEND_PUBLIC_URL` is wrong
 - the backend is not reachable from the browser
-- you expected public cloud storage URLs but have not configured Supabase correctly
+- you expected signed cloud storage URLs but have not configured Supabase correctly
 
 ### A completed job may still need `Retry synthesis`
 

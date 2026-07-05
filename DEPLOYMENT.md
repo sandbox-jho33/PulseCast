@@ -50,8 +50,11 @@ Run migrations in order from `backend/migrations/`:
 1. `001_initial_schema.sql`
 2. `002_add_llm_provider.sql`
 3. `003_auth_byok.sql`
+4. `004_private_audio_storage.sql`
 
-Use a private Supabase Storage bucket where possible. If the bucket is public, generated audio URLs are public to anyone with the URL.
+Keep the `podcast-audio` bucket private. The backend stores private storage
+markers in Postgres and returns short-lived signed URLs from the authenticated
+`/download/{job_id}` route after it verifies job ownership.
 
 ## CI/CD
 
