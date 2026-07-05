@@ -70,6 +70,7 @@ export interface StatusResponse {
   script_version: number;
   source_title?: string;
   final_podcast_url?: string;
+  audio_ready?: boolean;
   duration_seconds?: number;
   error_message?: string;
 }

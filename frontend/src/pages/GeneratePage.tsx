@@ -90,6 +90,7 @@ export function GeneratePage() {
     jobId,
     status,
     script,
+    audioUrl,
     isLoading,
     isRetryingAudio,
     error,
@@ -153,8 +154,8 @@ export function GeneratePage() {
   const hasJob = !!status;
   const isComplete = status?.status === 'COMPLETED';
   const isFailed = status?.status === 'FAILED';
-  const hasPlayableAudioUrl = !!status?.final_podcast_url && !status.final_podcast_url.startsWith('file://');
-  const isCompleteWithoutAudio = isComplete && !hasPlayableAudioUrl;
+  const hasPlayableAudio = !!status?.audio_ready;
+  const isCompleteWithoutAudio = isComplete && !hasPlayableAudio;
   const shouldTruncate = !!script && ['DIRECTOR', 'AUDIO', 'COMPLETED'].includes(status?.current_step ?? '');
   const workflowErrorMessage = status?.error_message
     ?? (isCompleteWithoutAudio
@@ -267,7 +268,7 @@ export function GeneratePage() {
                   )}
 
                   <AudioPlayer
-                    audioUrl={hasPlayableAudioUrl ? status.final_podcast_url : undefined}
+                    audioUrl={audioUrl ?? undefined}
                     durationSeconds={status.duration_seconds}
                   />
 

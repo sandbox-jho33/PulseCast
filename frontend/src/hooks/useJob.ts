@@ -5,6 +5,7 @@ import {
   generatePodcast,
   getJobStatus,
   getScript,
+  getDownload,
   editScript as apiEditScript,
   retryAudioSynthesis,
   setAuthTokenGetter,
@@ -27,7 +28,7 @@ function saveStoredJobs(jobs: StoredJob[]) {
 
 function isAudioRetryable(status: StatusResponse | null): boolean {
   if (!status) return false;
-  const hasPlayableAudioUrl = !!status.final_podcast_url && !status.final_podcast_url.startsWith('file://');
+  const hasPlayableAudioUrl = !!status.audio_ready && !status.final_podcast_url?.startsWith('file://');
 
   const failedAtAudio = status.status === 'FAILED' && status.current_step === 'AUDIO';
   const completedWithoutAudio = status.status === 'COMPLETED' && !hasPlayableAudioUrl;
@@ -40,6 +41,7 @@ export function useJob() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [script, setScript] = useState<ScriptResponse | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRetryingAudio, setIsRetryingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +63,21 @@ export function useJob() {
     setAuthTokenGetter(getToken);
   }, [getToken]);
 
+  const refreshAudioUrl = useCallback(async (nextStatus: StatusResponse, id: string) => {
+    if (nextStatus.status !== 'COMPLETED' || !nextStatus.audio_ready) {
+      setAudioUrl(null);
+      return;
+    }
+
+    if (nextStatus.final_podcast_url) {
+      setAudioUrl(nextStatus.final_podcast_url);
+      return;
+    }
+
+    const download = await getDownload(id);
+    setAudioUrl(download.final_podcast_url);
+  }, []);
+
   const startGeneration = useCallback(async (
     sourceUrl: string,
     llmProvider?: LLMProvider,
@@ -78,7 +95,9 @@ export function useJob() {
         current_step: response.current_step,
         progress_pct: 0,
         script_version: 0,
+        audio_ready: false,
       });
+      setAudioUrl(null);
       
       const newJob: StoredJob = {
         id: response.job_id,
@@ -104,6 +123,7 @@ export function useJob() {
       
       setJobId(id);
       setStatus(statusResponse);
+      await refreshAudioUrl(statusResponse, id);
       
       if (statusResponse.current_step === 'COMPLETED') {
         const scriptResponse = await getScript(id).catch(() => null);
@@ -118,7 +138,7 @@ export function useJob() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [refreshAudioUrl]);
 
   const pollStatus = useCallback(async () => {
     if (!jobId) return;
@@ -126,6 +146,7 @@ export function useJob() {
     try {
       const statusResponse = await getJobStatus(jobId);
       setStatus(statusResponse);
+      await refreshAudioUrl(statusResponse, jobId);
       
       if (statusResponse.status === 'COMPLETED' || statusResponse.status === 'FAILED') {
         setRecentJobs(prev => {
@@ -153,7 +174,7 @@ export function useJob() {
     } catch (err) {
       console.error('Poll error:', err);
     }
-  }, [jobId]);
+  }, [jobId, refreshAudioUrl]);
 
   const editScript = useCallback(async (newScript: string, resume: boolean = false) => {
     if (!jobId) return;
@@ -179,6 +200,7 @@ export function useJob() {
     try {
       const statusResponse = await retryAudioSynthesis(jobId);
       setStatus(statusResponse);
+      setAudioUrl(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to retry synthesis');
     } finally {
@@ -190,6 +212,7 @@ export function useJob() {
     setJobId(null);
     setStatus(null);
     setScript(null);
+    setAudioUrl(null);
     setIsRetryingAudio(false);
     setError(null);
     window.history.replaceState(null, '', window.location.pathname);
@@ -207,6 +230,7 @@ export function useJob() {
     jobId,
     status,
     script,
+    audioUrl,
     isLoading,
     isRetryingAudio,
     error,
