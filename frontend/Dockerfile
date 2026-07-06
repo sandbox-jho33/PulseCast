@@ -1,11 +1,11 @@
 FROM oven/bun:1 AS build
 
 WORKDIR /app
-ARG CLERK_PUBLIC_VALUE
+ARG VITE_CLERK_PUBLISHABLE_KEY
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY . .
-RUN VITE_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLIC_VALUE} bun run build
+RUN VITE_CLERK_PUBLISHABLE_KEY=${VITE_CLERK_PUBLISHABLE_KEY} bun run build
 
 FROM nginx:1.27-alpine AS runtime
 

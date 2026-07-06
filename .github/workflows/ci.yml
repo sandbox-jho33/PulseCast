@@ -55,4 +55,4 @@ jobs:
       - name: Build backend image
         run: docker build -f backend/Dockerfile backend
       - name: Build frontend image
-        run: docker build --build-arg CLERK_PUBLIC_VALUE=pk_test_ci -f frontend/Dockerfile frontend
+        run: docker build --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_test_ci -f frontend/Dockerfile frontend
